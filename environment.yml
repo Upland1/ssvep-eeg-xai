@@ -1,0 +1,16 @@
+name: ssvep-eeg-xai
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - pandas
+  - matplotlib
+  - scikit-learn
+  - joblib
+  - pytorch
+  - shap
+  - pyyaml
+  - jupyter

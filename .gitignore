@@ -1,0 +1,25 @@
+# Bytecode / Python
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# Environments
+.venv/
+env/
+venv/
+
+# Raw EEG Data & Large Binaries
+data/raw/
+data/processed/*.npy
+*.ebr
+
+# Model Checkpoints & Large Artifacts
+outputs/saved_models/*.pt
+outputs/saved_models/*.joblib
+outputs/figures/
+outputs/reports/
+
+# OS Specific
+.DS_Store
+Thumbs.db

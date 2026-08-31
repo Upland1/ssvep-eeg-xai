@@ -1,0 +1,39 @@
+project:
+  name: ssvep-eeg-xai
+  target_conditions: [101, 102, 103, 104]
+
+preprocessing:
+  lowcut_hz: 1.0
+  highcut_hz: 60.0
+  filter_order: 4
+  sub_window_sec: 1.0
+  vpp_thresh_uv: 200.0
+  std_range: [0.5, 60.0]
+
+channels:
+  scalp:
+    - PO3
+    - POz
+    - PO4
+    - PO8
+    - O1
+    - Oz
+    - O2
+  mark_channel: MARK
+
+features:
+  psd_range_hz: [5.0, 35.0]
+  plotting_range_hz: [1.0, 60.0]
+
+modeling:
+  n_folds: 5
+  random_state: 42
+  scoring: accuracy
+
+paths:
+  data_raw_dir: data/raw
+  data_processed_dir: data/processed
+  outputs_dir: outputs
+  figures_dir: outputs/figures
+  reports_dir: outputs/reports
+  saved_models_dir: outputs/saved_models
