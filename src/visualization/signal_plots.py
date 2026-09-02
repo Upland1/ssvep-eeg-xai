@@ -1,7 +1,5 @@
 """Signal plotting utilities for EEG time windows and spectra."""
 
-from __future__ import annotations
-
 import os
 
 import matplotlib.pyplot as plt
@@ -62,4 +60,45 @@ def plot_average_psd_by_condition(condition_records, channel_names: list[str], t
     fig.tight_layout()
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    
+def plot_stimulus_vs_baseline_psd(
+    condition_records: dict,
+    channel_names: list[str],
+    stim_cond: int = 202,
+    baseline_cond: int = 201,
+    target_freq_range: tuple[float, float] = (1.0, 40.0),
+    output_path: str | None = None,
+):
+    """Plot average PSD of the stimulus condition overlaid with the 201 cross baseline."""
+    fig, axes = plt.subplots(len(channel_names), 1, figsize=(12, 2.5 * len(channel_names)), sharex=True)
+    if len(channel_names) == 1:
+        axes = [axes]
+
+    baseline_psd = np.array([r["psd"] for r in condition_records.get(baseline_cond, [])])
+    stim_psd = np.array([r["psd"] for r in condition_records.get(stim_cond, [])])
+
+    freqs = condition_records[stim_cond][0]["freqs"] if stim_psd.size > 0 else condition_records[baseline_cond][0]["freqs"]
+    mask = (freqs >= target_freq_range[0]) & (freqs <= target_freq_range[1])
+
+    avg_base = np.mean(baseline_psd, axis=0) if baseline_psd.size > 0 else None
+    avg_stim = np.mean(stim_psd, axis=0) if stim_psd.size > 0 else None
+
+    for i, ch_name in enumerate(channel_names):
+        if avg_base is not None:
+            axes[i].plot(freqs[mask], 10 * np.log10(avg_base[i, mask] + 1e-12), label=f"Cross 201 Baseline (N={len(baseline_psd)})", color="gray", linestyle="--")
+        if avg_stim is not None:
+            axes[i].plot(freqs[mask], 10 * np.log10(avg_stim[i, mask] + 1e-12), label=f"Stimulus {stim_cond} (N={len(stim_psd)})", color="crimson", linewidth=1.8)
+
+        axes[i].set_ylabel(f"{ch_name}\n(dB/Hz)")
+        axes[i].legend(loc="upper right")
+        axes[i].grid(True, alpha=0.3)
+
+    axes[-1].set_xlabel("Frequency (Hz)")
+    axes[0].set_title(f"Spectral Comparison: Stimulus {stim_cond} vs Pre-Stimulus Fixation Cross {baseline_cond}")
+    fig.tight_layout()
+
+    if output_path:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)

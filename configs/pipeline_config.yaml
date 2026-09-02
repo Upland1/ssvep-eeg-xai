@@ -1,6 +1,37 @@
 project:
-  name: ssvep-eeg-xai
-  target_conditions: [101, 102, 103, 104]
+  name: "ssvep-eeg-xai"
+  description: "SSVEP classification and Explainable AI pipeline on binary EBR EEG data"
+  target_conditions:
+    - 201  # Fixation cross / Rest baseline
+    - 202  # Cue / Lookback window
+    - 101  # Stimulus target 1
+    - 102  # Stimulus target 2
+    - 103  # Stimulus target 3
+    - 104  # Stimulus target 4
+    - 105  # Stimulus target 5
+
+paths:
+  data_raw_dir: "data/raw"
+  data_processed_dir: "data/processed"
+  figures_dir: "outputs/figures"
+  reports_dir: "outputs/reports"
+  saved_models_dir: "outputs/saved_models"
+
+channels:
+  scalp:
+    - "PO3"
+    - "POz"
+    - "PO4"
+    - "PO8"
+    - "O1"
+    - "Oz"
+    - "O2"
+  excluded:
+    - "PO7"
+  mark_channel: "MARK"
+  auxiliary:
+    - "TIMESTAMP"
+    - "FLASHINGTIME"
 
 preprocessing:
   lowcut_hz: 1.0
@@ -9,31 +40,20 @@ preprocessing:
   sub_window_sec: 1.0
   vpp_thresh_uv: 200.0
   std_range: [0.5, 60.0]
-
-channels:
-  scalp:
-    - PO3
-    - POz
-    - PO4
-    - PO8
-    - O1
-    - Oz
-    - O2
-  mark_channel: MARK
+  baseline:
+    cross_condition: 201
+    cue_condition: 202
+    stimulus_duration_sec: 5.0
+    pre_stim_cross_sec: 2.0
+    cue_lookback_sec: 1.0
 
 features:
   psd_range_hz: [5.0, 35.0]
   plotting_range_hz: [1.0, 60.0]
 
-modeling:
-  n_folds: 5
+training:
+  cv_splits: 5
   random_state: 42
-  scoring: accuracy
-
-paths:
-  data_raw_dir: data/raw
-  data_processed_dir: data/processed
-  outputs_dir: outputs
-  figures_dir: outputs/figures
-  reports_dir: outputs/reports
-  saved_models_dir: outputs/saved_models
+  batch_size: 16
+  learning_rate: 0.001
+  epochs: 100

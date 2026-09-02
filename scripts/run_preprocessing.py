@@ -1,11 +1,12 @@
 """Run EEG preprocessing and condition-based PSD feature extraction."""
-import sys
 from pathlib import Path
-    
 import numpy as np
 import yaml
 
-from src.features.psd_extraction import prepare_feature_matrix, process_condition_windows
+from src.features.psd_extraction import (
+    prepare_feature_matrix,
+    process_condition_windows_with_baseline,
+)
 from src.io.ebr_parser import load_ebr_file
 from src.preprocessing.filters import apply_iir_bandpass
 from src.visualization.signal_plots import plot_average_psd_by_condition
@@ -25,7 +26,12 @@ def main():
 
     scalp_channels = config["channels"]["scalp"]
     eeg_indices = [i for i, name in enumerate(recording["channels"]) if name in scalp_channels]
-    mark_idx = recording["channels"].index(config["channels"]["mark_channel"]) if config["channels"]["mark_channel"] in recording["channels"] else -1
+
+    mark_idx = (
+        recording["channels"].index(config["channels"]["mark_channel"])
+        if config["channels"]["mark_channel"] in recording["channels"]
+        else -1
+    )
     mark_signal = raw_matrix[mark_idx, :] if mark_idx != -1 else np.zeros(raw_matrix.shape[1])
 
     filtered_eeg = apply_iir_bandpass(
@@ -36,19 +42,36 @@ def main():
         order=config["preprocessing"]["filter_order"],
     )
 
-    condition_records = process_condition_windows(
+    stimulus_targets = [c for c in config["project"]["target_conditions"] if c not in (201, 202)]
+
+    condition_records = process_condition_windows_with_baseline(
         filtered_eeg,
         mark_signal,
         fs,
-        target_conditions=config["project"]["target_conditions"],
+        target_conditions=tuple(stimulus_targets),
+        cue_condition=config["preprocessing"]["baseline"]["cue_condition"],
+        cross_condition=config["preprocessing"]["baseline"]["cross_condition"],
         sub_window_sec=config["preprocessing"]["sub_window_sec"],
         vpp_thresh=config["preprocessing"]["vpp_thresh_uv"],
         std_range=tuple(config["preprocessing"]["std_range"]),
+        stim_duration_sec=config["preprocessing"]["baseline"]["stimulus_duration_sec"],
+        cue_lookback_sec=config["preprocessing"]["baseline"]["cue_lookback_sec"],
     )
+
+    # Print validation of window balance
+    print("\n--- Window Extraction Counts ---")
+    total_stim = 0
+    for cond in config["project"]["target_conditions"]:
+        count = len(condition_records.get(cond, []))
+        print(f"Condition {cond}: {count} windows")
+        if cond in stimulus_targets:
+            total_stim += count
+    cue_count = len(condition_records.get(202, []))
+    print(f"Total Stimulus Windows (101-105): {total_stim} | Cue (202) Windows: {cue_count}\n")
 
     feature_matrix_x, target_matrix_y = prepare_feature_matrix(
         condition_records,
-        target_conditions=config["project"]["target_conditions"],
+        target_conditions=tuple(config["project"]["target_conditions"]),
         freq_range=tuple(config["features"]["psd_range_hz"]),
     )
 
@@ -57,6 +80,7 @@ def main():
 
     output_dir = base_dir / config["paths"]["figures_dir"] / "spectra"
     output_dir.mkdir(parents=True, exist_ok=True)
+
     plot_average_psd_by_condition(
         condition_records,
         scalp_channels,
@@ -66,6 +90,7 @@ def main():
 
     processed_dir = base_dir / config["paths"]["data_processed_dir"]
     processed_dir.mkdir(parents=True, exist_ok=True)
+
     np.save(processed_dir / "X_psd_features.npy", feature_matrix_x)
     np.save(processed_dir / "y_labels.npy", target_matrix_y)
 

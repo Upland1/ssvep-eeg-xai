@@ -1,7 +1,5 @@
 """Artifact validation utilities for EEG windows."""
 
-from __future__ import annotations
-
 import numpy as np
 
 
