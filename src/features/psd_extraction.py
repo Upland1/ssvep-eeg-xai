@@ -29,6 +29,7 @@ def extract_clean_subwindows_psd(
 
         freqs, psd = periodogram(sub_win, fs=fs, axis=-1)
         records.append({
+            "time_data": sub_win,
             "vpp": vpp,
             "std": std_dev,
             "psd": psd,
@@ -110,9 +111,10 @@ def prepare_feature_matrix(
     condition_records: dict,
     target_conditions: tuple[int, ...] = (201, 202, 101, 102, 103, 104, 105),
     freq_range: tuple[float, float] = (5.0, 35.0),
-) -> tuple[np.ndarray, np.ndarray]:
-    """Flatten selected PSD features across channels and frequencies into (X, y)."""
-    X = []
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Flatten selected PSD features into X_psd, export X_time, and vector y."""
+    X_psd = []
+    X_time = []
     y = []
 
     for cond in target_conditions:
@@ -126,10 +128,11 @@ def prepare_feature_matrix(
             freq_mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1])
             psd_selected = psd[:, freq_mask]
 
-            X.append(psd_selected.flatten())
+            X_psd.append(psd_selected.flatten())
+            X_time.append(item.get("time_data", np.zeros((7, 250))))
             y.append(cond)
 
-    return np.array(X), np.array(y)
+    return np.array(X_psd), np.array(X_time), np.array(y)
 
 # Backwards compatibility alias
 process_condition_windows = process_condition_windows_with_baseline

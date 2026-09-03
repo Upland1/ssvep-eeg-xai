@@ -69,11 +69,18 @@ def main():
     cue_count = len(condition_records.get(202, []))
     print(f"Total Stimulus Windows (101-105): {total_stim} | Cue (202) Windows: {cue_count}\n")
 
-    feature_matrix_x, target_matrix_y = prepare_feature_matrix(
+    processed_dir = base_dir / config["paths"]["data_processed_dir"]
+    processed_dir.mkdir(parents=True, exist_ok=True)
+
+    feature_matrix_x, time_matrix_x, target_matrix_y = prepare_feature_matrix(
         condition_records,
         target_conditions=tuple(config["project"]["target_conditions"]),
         freq_range=tuple(config["features"]["psd_range_hz"]),
     )
+
+    np.save(processed_dir / "X_psd_features.npy", feature_matrix_x)
+    np.save(processed_dir / "X_time_windows.npy", time_matrix_x)
+    np.save(processed_dir / "y_labels.npy", target_matrix_y)
 
     print(f"Feature matrix X shape: {feature_matrix_x.shape}")
     print(f"Target vector y shape: {target_matrix_y.shape}")
@@ -87,12 +94,6 @@ def main():
         target_freq_range=tuple(config["features"]["plotting_range_hz"]),
         output_path=str(output_dir / "average_psd_by_condition.png"),
     )
-
-    processed_dir = base_dir / config["paths"]["data_processed_dir"]
-    processed_dir.mkdir(parents=True, exist_ok=True)
-
-    np.save(processed_dir / "X_psd_features.npy", feature_matrix_x)
-    np.save(processed_dir / "y_labels.npy", target_matrix_y)
 
     print("Preprocessing completed successfully.")
 
