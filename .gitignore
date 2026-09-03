@@ -12,11 +12,16 @@ venv/
 # Raw EEG Data & Large Binaries
 data/raw/
 data/processed/*.npy
+data/processed/**/*.npy
 *.ebr
 
-# Model Checkpoints & Large Artifacts
-outputs/saved_models/*.pt
-outputs/saved_models/*.joblib
+# Model artifacts
+outputs/models/
+outputs/saved_models/
+*.pt
+*.joblib
+
+# Generated output directories by default
 outputs/figures/
 outputs/reports/
 
