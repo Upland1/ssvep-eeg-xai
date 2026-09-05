@@ -3,6 +3,32 @@
 import numpy as np
 
 
+def validate_eeg_windows(
+    windows: np.ndarray,
+    vpp_min: float = 0.5,
+    vpp_max: float = 120.0,
+    std_min: float = 0.1,
+    std_max: float = 35.0,
+) -> np.ndarray:
+    """Return a binary mask for windows whose channels meet EEG limits."""
+    if windows.ndim != 3:
+        raise ValueError("windows must have shape (n_windows, n_channels, n_samples)")
+
+    vpp_per_channel = np.ptp(windows, axis=-1)
+    std_per_channel = np.std(windows, axis=-1)
+    vpp_ok = np.all((vpp_per_channel >= vpp_min) & (vpp_per_channel <= vpp_max), axis=1)
+    std_ok = np.all((std_per_channel >= std_min) & (std_per_channel <= std_max), axis=1)
+    return (vpp_ok & std_ok).astype(int)
+
+
+def filter_dataset(X: np.ndarray, y: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Drop invalid windows from a data matrix and its labels."""
+    if X.shape[0] != y.shape[0] or X.shape[0] != mask.shape[0]:
+        raise ValueError("X, y, and mask must contain the same number of windows")
+    valid_idx = np.flatnonzero(mask == 1)
+    return X[valid_idx], y[valid_idx]
+
+
 def window_quality_flags(signal: np.ndarray, vpp_thresh: float = 200.0, std_range: tuple[float, float] = (0.5, 60.0)) -> tuple[np.ndarray, np.ndarray]:
     """Return per-channel Vp-p and std metrics and a binary noise mask."""
     vpp_per_ch = np.ptp(signal, axis=-1)

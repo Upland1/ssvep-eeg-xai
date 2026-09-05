@@ -18,7 +18,7 @@ def main():
         config = yaml.safe_load(f)
 
     base_dir = Path(__file__).resolve().parents[1]
-    file_path = base_dir / config["paths"]["data_raw_dir"] / "S01" / "OO.ebr"
+    file_path = base_dir / config["paths"]["data_raw_dir"] / "S03" / "OO.ebr"
 
     recording = load_ebr_file(file_path)
     fs = recording["sampling_rate"]
@@ -43,6 +43,7 @@ def main():
     )
 
     stimulus_targets = [c for c in config["project"]["target_conditions"] if c not in (201, 202)]
+    quality_stats = {"total": 0, "accepted": 0, "rejected": 0}
 
     condition_records = process_condition_windows_with_baseline(
         filtered_eeg,
@@ -56,6 +57,14 @@ def main():
         std_range=tuple(config["preprocessing"]["std_range"]),
         stim_duration_sec=config["preprocessing"]["baseline"]["stimulus_duration_sec"],
         cue_lookback_sec=config["preprocessing"]["baseline"]["cue_lookback_sec"],
+        quality_stats=quality_stats,
+    )
+
+    print(
+        "Window quality validation: "
+        f"{quality_stats['accepted']} accepted, "
+        f"{quality_stats['rejected']} rejected, "
+        f"{quality_stats['total']} total"
     )
 
     # Print validation of window balance

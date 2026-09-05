@@ -12,6 +12,7 @@ venv/
 # Raw EEG Data & Large Binaries
 data/raw/
 data/processed/*.npy
+data/processed/*/*.npy
 *.ebr
 
 # Model Checkpoints & Large Artifacts
@@ -19,6 +20,7 @@ outputs/saved_models/*.pt
 outputs/saved_models/*.joblib
 outputs/figures/
 outputs/reports/
+outputs/models/
 
 # OS Specific
 .DS_Store

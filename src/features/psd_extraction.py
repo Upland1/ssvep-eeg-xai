@@ -2,6 +2,8 @@
 import numpy as np
 from scipy.signal import periodogram
 
+from src.preprocessing.quality_check import validate_eeg_windows
+
 
 def extract_clean_subwindows_psd(
     eeg_segment: np.ndarray,
@@ -9,23 +11,35 @@ def extract_clean_subwindows_psd(
     sub_window_sec: float = 1.0,
     vpp_thresh: float = 200.0,
     std_range: tuple[float, float] = (0.5, 60.0),
+    quality_stats: dict[str, int] | None = None,
 ) -> list[dict]:
     """Slice an EEG segment into sub-windows, filter artifacts, and extract PSD."""
     samples_per_sub = int(sub_window_sec * fs)
     n_sub = eeg_segment.shape[1] // samples_per_sub
     records = []
+    subwindows = np.stack([
+        eeg_segment[:, s * samples_per_sub:(s + 1) * samples_per_sub]
+        for s in range(n_sub)
+    ]) if n_sub else np.empty((0, eeg_segment.shape[0], samples_per_sub))
+    # 
+    valid_mask = validate_eeg_windows(
+        subwindows,
+        vpp_max=vpp_thresh,
+        std_min=std_range[0],
+        std_max=std_range[1],
+    )
+    if quality_stats is not None:
+        quality_stats["total"] += n_sub
+        quality_stats["rejected"] += int(np.count_nonzero(valid_mask == 0))
+        quality_stats["accepted"] += int(np.count_nonzero(valid_mask == 1))
 
     for s in range(n_sub):
-        start = s * samples_per_sub
-        end = start + samples_per_sub
-        sub_win = eeg_segment[:, start:end]
+        if valid_mask[s] == 0:
+            continue
 
+        sub_win = subwindows[s]
         vpp = np.ptp(sub_win, axis=-1)
         std_dev = np.std(sub_win, axis=-1)
-
-        # Artifact validation
-        if np.any(vpp > vpp_thresh) or np.any(std_dev < std_range[0]) or np.any(std_dev > std_range[1]):
-            continue
 
         freqs, psd = periodogram(sub_win, fs=fs, axis=-1)
         records.append({
@@ -49,6 +63,7 @@ def process_condition_windows_with_baseline(
     std_range: tuple[float, float] = (0.5, 60.0),
     stim_duration_sec: float = 5.0,
     cue_lookback_sec: float = 1.0,
+    quality_stats: dict[str, int] | None = None,
 ) -> dict[int, list[dict]]:
     """Extracts condition windows ensuring exact subwindow counts and 202 lookback alignment."""
     condition_records: dict[int, list[dict]] = {
@@ -66,7 +81,7 @@ def process_condition_windows_with_baseline(
         if (idx - start) == cue_samples:
             segment = eeg_data[:, start:idx]
             records = extract_clean_subwindows_psd(
-                segment, fs, sub_window_sec, vpp_thresh, std_range
+                segment, fs, sub_window_sec, vpp_thresh, std_range, quality_stats
             )
             condition_records[cue_condition].extend(records)
 
@@ -88,7 +103,7 @@ def process_condition_windows_with_baseline(
             if end_idx <= eeg_data.shape[1]:
                 stim_segment = eeg_data[:, event_idx:end_idx]
                 records = extract_clean_subwindows_psd(
-                    stim_segment, fs, sub_window_sec, vpp_thresh, std_range
+                    stim_segment, fs, sub_window_sec, vpp_thresh, std_range, quality_stats
                 )
                 condition_records[cond].extend(records)
 
@@ -99,7 +114,7 @@ def process_condition_windows_with_baseline(
             end_c = min(eeg_data.shape[1], c_idx + int(2.0 * fs))
             cross_segment = eeg_data[:, c_idx:end_c]
             records = extract_clean_subwindows_psd(
-                cross_segment, fs, sub_window_sec, vpp_thresh, std_range
+                cross_segment, fs, sub_window_sec, vpp_thresh, std_range, quality_stats
             )
             condition_records[cross_condition].extend(records)
 
