@@ -2,7 +2,41 @@
 import numpy as np
 from scipy.signal import periodogram
 
-from src.preprocessing.quality_check import validate_eeg_windows
+from src.preprocessing.quality_check import filter_dataset, validate_eeg_windows
+
+
+def extract_continuous_psd_features(
+    windows: np.ndarray,
+    y: np.ndarray,
+    fs: float = 250.0,
+    freq_range: tuple[float, float] = (5.0, 35.0),
+    use_db: bool = False,
+    vpp_limits: tuple[float, float] = (0.5, 120.0),
+    std_limits: tuple[float, float] = (0.1, 35.0),
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Validate windows and return flattened continuous-band PSD features."""
+    valid_mask = validate_eeg_windows(
+        windows,
+        vpp_min=vpp_limits[0],
+        vpp_max=vpp_limits[1],
+        std_min=std_limits[0],
+        std_max=std_limits[1],
+    )
+    clean_windows, y_clean = filter_dataset(windows, y, valid_mask)
+
+    if clean_windows.shape[0] == 0:
+        raise ValueError("All windows were rejected by the validation mask.")
+
+    freqs, psd = periodogram(clean_windows, fs=fs, axis=-1)
+    freq_mask = (freqs >= freq_range[0]) & (freqs <= freq_range[1])
+    psd_band = psd[:, :, freq_mask]
+
+    if use_db:
+        psd_band = 10.0 * np.log10(psd_band + 1e-12)
+
+    n_clean, n_channels, n_bins = psd_band.shape
+    X_psd = psd_band.reshape(n_clean, n_channels * n_bins)
+    return X_psd, y_clean, valid_mask
 
 
 def extract_clean_subwindows_psd(
