@@ -31,9 +31,12 @@ windows = windows_raw[stim_mask] if windows_raw.shape[0] == len(y_raw) else wind
 # 2. Extract Base Features
 print(f"Loaded {windows.shape[0]} windows across {windows.shape[1]} channels.")
 print("Extracting feature representations...")
+X_psd_cont, y_clean, mask_clean = extract_continuous_psd_features(windows, y_stim, fs=250.0)
 
-X_psd_cont, y_clean, _ = extract_continuous_psd_features(windows, y_stim, fs=250.0)
-X_fbcca, _, _ = extract_fbcca_features(windows, y_stim, fs=250.0)
+# Filter windows array to match the artifact-free subset (197 windows)
+windows_clean = windows[mask_clean == 1]
+
+X_fbcca, _, _ = extract_fbcca_features(windows_clean, y_clean, fs=250.0)
 
 # Unsupervised FBCCA Baseline (argmax without any training)
 label_map = {0: 101, 1: 102, 2: 103, 3: 104, 4: 105}
@@ -41,15 +44,13 @@ unsupervised_preds = np.array([label_map[i] for i in np.argmax(X_fbcca, axis=1)]
 direct_fbcca_acc = accuracy_score(y_clean, unsupervised_preds) * 100.0
 print(f"\n>>> Direct Unsupervised FBCCA Baseline (No ML, Argmax): {direct_fbcca_acc:.2f}% <<<\n")
 
-# Targeted Harmonic PSD (4 visual channels x 8 harmonic peaks = 32 dims)
-# Visual channels: O1, Oz, O2, POz (indices 3, 4, 5, 6 in 7-scalp montage)
-keep_ch = [3, 4, 5, 6] if windows.shape[1] >= 7 else list(range(windows.shape[1]))
+# Targeted Harmonic PSD computed on CLEAN windows (197 samples)
+keep_ch = [3, 4, 5, 6] if windows_clean.shape[1] >= 7 else list(range(windows_clean.shape[1]))
 target_freqs = [8.57, 10.91, 15.0, 17.14, 20.0, 21.82, 24.0, 30.0]
-freqs = np.linspace(0.0, 125.0, windows.shape[-1] // 2 + 1)
+freqs = np.linspace(0.0, 125.0, windows_clean.shape[-1] // 2 + 1)
 target_idx = [np.argmin(np.abs(freqs - f)) for f in target_freqs]
-
-fft_vals = np.abs(np.fft.rfft(windows[:, keep_ch, :], axis=-1)) ** 2
-X_psd_harm = fft_vals[:, :, target_idx].reshape(windows.shape[0], -1)
+fft_vals = np.abs(np.fft.rfft(windows_clean[:, keep_ch, :], axis=-1)) ** 2
+X_psd_harm = fft_vals[:, :, target_idx].reshape(windows_clean.shape[0], -1)
 
 # 3. Setup Cross-Validation
 skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -63,8 +64,8 @@ feature_spaces = {
     "2. Harmonic PSD (Visual Ch)": (X_psd_harm, False),
     "3. FBCCA Priors": (X_fbcca, False),
     "4. Hybrid: Harmonic PSD + FBCCA": (np.hstack([X_psd_harm, X_fbcca]), False),
-    "5. FBCSP (Leak-Free CV)": (windows, True),
-    "6. Hybrid: FBCSP + FBCCA": (windows, "fbcsp_fbcca"),
+    "5. FBCSP (Leak-Free CV)": (windows_clean, True),
+    "6. Hybrid: FBCSP + FBCCA": (windows_clean, "fbcsp_fbcca"),
 }
 
 results = []
@@ -79,7 +80,7 @@ for feat_name, (data_obj, is_csp) in feature_spaces.items():
     for model_name, clf_template in test_models.items():
         fold_accs = []
         
-        for train_idx, test_idx in skf.split(windows, y_clean):
+        for train_idx, test_idx in skf.split(windows_clean, y_clean):
             y_tr, y_te = y_clean[train_idx], y_clean[test_idx]
             
             # Proper Leak-Free CSP transformation inside the fold

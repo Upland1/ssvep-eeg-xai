@@ -6,6 +6,7 @@ import numpy as np
 from src.features.fbcca_extraction import extract_fbcca_features
 from src.features.fbcsp_extraction import extract_fbcsp_features
 from src.features.psd_extraction import extract_continuous_psd_features
+from src.preprocessing.quality_check import validate_eeg_windows
 
 parser = argparse.ArgumentParser(
     description="Verify and visualize PSD, FBCCA, and FBCSP extractions."
@@ -28,18 +29,25 @@ y_raw = np.load(data_dir / "y_labels.npy")
 print(f"Loaded X_time_windows shape: {windows_raw.shape}")
 print(f"Loaded y_labels shape:       {y_raw.shape}")
 
-# 2. Filter labels to stimulus conditions (101-105)
-stim_mask = np.isin(y_raw, [101, 102, 103, 104, 105])
-y_stim = y_raw[stim_mask]  # This has 200 elements
+# 2. Validate all loaded windows before selecting stimulus conditions
+if windows_raw.shape[0] != y_raw.shape[0]:
+    raise ValueError("X_time_windows and y_labels must contain the same number of windows")
 
-# 3. Slice windows to match the 200 stimulus trials
-if windows_raw.shape[0] == len(y_raw):
-  windows = windows_raw[stim_mask]
-else:
-  # When X_time_windows contains raw blocks (e.g. 320), take the first 200 to match y_stim
-  windows = windows_raw[: len(y_stim)]
+mask_all = validate_eeg_windows(windows_raw)
+print(f"Full validation mask size:   {len(mask_all)}")
+print(f"Full validation mask:        {mask_all.tolist()}")
+
+# 3. Filter labels to stimulus conditions (101-105)
+stim_mask = np.isin(y_raw, [101, 102, 103, 104, 105])
+y_stim = y_raw[stim_mask]
+
+# Keep the validation results aligned with the selected stimulus windows.
+windows = windows_raw[stim_mask]
+mask_stim = mask_all[stim_mask]
+print(f"Stimulus validation mask size: {len(mask_stim)}")
+print(f"Stimulus validation mask:      {mask_stim.tolist()}")
   
-# 2. Run all three extractors with artifact validation
+# 4. Run all three extractors with artifact validation
 X_psd, y_clean_psd, mask_psd = extract_continuous_psd_features(
     windows, y_stim, fs=250.0
 )
@@ -50,11 +58,13 @@ X_fbcsp, y_clean_fbcsp, mask_fbcsp = extract_fbcsp_features(
     windows, y_stim, fs=250.0
 )
 
-# 3. Print verification and sanity metrics
+# 5. Print verification and sanity metrics
 print("=" * 60)
 print("         BINARY VALIDATION MASK & MATRIX VERIFICATION")
 print("=" * 60)
 print(f"Total raw input windows:   {len(mask_psd)}")
+print(f"Validation mask before stimulus selection: {len(mask_all)}")
+print(f"Validation mask after stimulus selection:  {len(mask_stim)}")
 print(f"Valid windows accepted (1): {int(np.sum(mask_psd))}")
 print(f"Noisy windows rejected (0): {int(np.sum(mask_psd == 0))}")
 print(f"Mask values sample:        {mask_psd[:15].tolist()}...")

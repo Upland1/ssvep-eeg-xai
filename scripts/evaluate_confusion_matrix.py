@@ -18,42 +18,56 @@ from src.features.fbcsp_extraction import (
     butter_bandpass_filter,
 )
 
+# 1. Parse CLI Arguments
+parser = argparse.ArgumentParser(
+    description="Evaluate out-of-fold confusion matrix and smoothing for SSVEP hybrid model."
+)
+parser.add_argument(
+    "--subject",
+    default=None,
+    help="Subject subdirectory (e.g. S01, S03). Defaults to data/processed.",
+)
+args = parser.parse_args()
+
 project_root = Path(__file__).resolve().parents[1]
 data_dir = project_root / "data" / "processed"
+if args.subject:
+  data_dir = data_dir / args.subject
 
-# 1. Load arrays safely
+# 2. Load arrays safely
 windows_raw = np.load(data_dir / "X_time_windows.npy")
 y_raw = np.load(data_dir / "y_labels.npy")
 
 stim_mask = np.isin(y_raw, [101, 102, 103, 104, 105])
 y_stim = y_raw[stim_mask]
+windows = (
+    windows_raw[stim_mask]
+    if windows_raw.shape[0] == len(y_raw)
+    else windows_raw[: len(y_stim)]
+)
 
-# Safe slice matching stimulus labels (200 windows)
-if windows_raw.shape[0] == len(y_raw):
-  windows = windows_raw[stim_mask]
-else:
-  windows = windows_raw[: len(y_stim)]
+# 3. Extract FBCCA with quality validation gate (filtering rejected artifact windows)
+X_fbcca, y_clean, valid_mask = extract_fbcca_features(windows, y_stim, fs=250.0)
+windows_clean = windows[valid_mask == 1]
 
-print(f"Verified aligned windows shape: {windows.shape}")
-print(f"Verified stimulus labels shape:  {y_stim.shape}")
+print(f"Subject: {args.subject or 'Root'}")
+print(f"Verified clean windows shape: {windows_clean.shape}")
+print(f"Verified clean labels shape:  {y_clean.shape}")
 
-# 2. Extract FBCCA across all 7 channels
-X_fbcca, _, _ = extract_fbcca_features(windows, y_stim, fs=250.0)
-
-# 3. Stratified 5-Fold Cross-Validation (m=1 CSP component pair)
+# 4. Stratified 5-Fold Cross-Validation (m=1 CSP component pair + FBCCA)
 skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-oof_probs = np.zeros((len(y_stim), 5))
+oof_probs = np.zeros((len(y_clean), 5))
 
-for train_idx, test_idx in skf.split(windows, y_stim):
-  y_tr, y_te = y_stim[train_idx], y_stim[test_idx]
+for train_idx, test_idx in skf.split(windows_clean, y_clean):
+  y_tr, y_te = y_clean[train_idx], y_clean[test_idx]
 
   X_tr_fold, X_te_fold = [], []
   for low, high in DEFAULT_SUBBANDS:
     w_tr = butter_bandpass_filter(
-        windows[train_idx], low, high, fs=250.0, order=4
+        windows_clean[train_idx], low, high, fs=250.0, order=4
     )
     w_te = butter_bandpass_filter(
-        windows[test_idx], low, high, fs=250.0, order=4
+        windows_clean[test_idx], low, high, fs=250.0, order=4
     )
     csp = MulticlassCSP(n_components=1).fit(w_tr, y_tr)
     X_tr_fold.append(csp.transform(w_tr))
@@ -68,18 +82,23 @@ for train_idx, test_idx in skf.split(windows, y_stim):
 
   clf = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
   clf.fit(X_tr_scaled, y_tr)
-  oof_probs[test_idx] = clf.predict_proba(X_te_scaled)
 
-# 4. Instantaneous 1.0s Accuracy
-classes = np.unique(y_stim)
+  # Match probabilities strictly to sorted unique classes
+  fold_probs = clf.predict_proba(X_te_scaled)
+  for col_idx, cls_label in enumerate(clf.classes_):
+    target_col = np.where(np.unique(y_clean) == cls_label)[0][0]
+    oof_probs[test_idx, target_col] = fold_probs[:, col_idx]
+
+# 5. Instantaneous 1.0s Accuracy
+classes = np.unique(y_clean)
 preds_1s = classes[np.argmax(oof_probs, axis=1)]
-acc_1s = accuracy_score(y_stim, preds_1s) * 100.0
+acc_1s = accuracy_score(y_clean, preds_1s) * 100.0
 
-# 5. Trial-Aware Causal Smoothing (Resets every 5 sub-windows per trial)
+# 6. Trial-Aware Causal Smoothing (Resets every 5 sub-windows per trial)
 trial_len = 5
-preds_smoothed = np.zeros_like(y_stim)
+preds_smoothed = np.zeros_like(y_clean)
 
-for i in range(len(y_stim)):
+for i in range(len(y_clean)):
   pos = i % trial_len
   if pos == 0:
     avg_p = oof_probs[i]
@@ -87,7 +106,7 @@ for i in range(len(y_stim)):
     avg_p = np.mean(oof_probs[i - 1 : i + 1], axis=0)
   preds_smoothed[i] = classes[np.argmax(avg_p)]
 
-acc_smooth = accuracy_score(y_stim, preds_smoothed) * 100.0
+acc_smooth = accuracy_score(y_clean, preds_smoothed) * 100.0
 
 print("=" * 60)
 print(f"5-Fold CV (FBCSP m=1 + FBCCA) 1.0s Accuracy:       {acc_1s:.2f}%")
@@ -102,13 +121,13 @@ target_names = [
     "105 (8.57 Hz)",
 ]
 print("\n--- Instantaneous Classification Report ---")
-print(classification_report(y_stim, preds_1s, target_names=target_names))
+print(classification_report(y_clean, preds_1s, target_names=target_names))
 
 print("--- 2.0s Smoothed Classification Report ---")
-print(classification_report(y_stim, preds_smoothed, target_names=target_names))
+print(classification_report(y_clean, preds_smoothed, target_names=target_names))
 
-# 6. Save Confusion Matrix
-cm = confusion_matrix(y_stim, preds_smoothed)
+# 7. Save Confusion Matrix
+cm = confusion_matrix(y_clean, preds_smoothed)
 cm_norm = cm.astype("float") / cm.sum(axis=1)[:, np.newaxis]
 
 fig, ax = plt.subplots(figsize=(8, 6))
@@ -122,20 +141,17 @@ sns.heatmap(
     ax=ax,
 )
 ax.set_title(
-  f"Core FBCSP (m=1) + FBCCA (2.0s Smoothed)\nMean CV Accuracy:"
-    f" {acc_smooth:.2f}%"
+    f"Core FBCSP (m=1) + FBCCA (2.0s Smoothed) - {args.subject or 'S01'}\nMean"
+    f" CV Accuracy: {acc_smooth:.2f}%"
 )
 ax.set_xlabel("Predicted Class")
 ax.set_ylabel("True Class")
 plt.tight_layout()
 
-out_path = (
-    project_root
-    / "outputs"
-    / "figures"
-    / "confusion_matrices"
-    / "cm_fbcsp_m1_fbcca_cv.png"
-)
+out_dir = project_root / "outputs" / "figures" / "confusion_matrices"
+out_dir.mkdir(parents=True, exist_ok=True)
+sub_tag = f"_{args.subject}" if args.subject else ""
+out_path = out_dir / f"cm_fbcsp_m1_fbcca_cv{sub_tag}.png"
 plt.savefig(out_path, dpi=150)
 plt.close(fig)
 print(f"\nUpdated confusion matrix saved to: {out_path}")
