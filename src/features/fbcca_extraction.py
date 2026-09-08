@@ -19,12 +19,12 @@ def generate_reference_signals(
 
 def get_chebyshev_subbands(fs: float) -> list[tuple[np.ndarray, np.ndarray]]:
   nyq = 0.5 * fs
-  highcut = min(60.0, nyq - 1.0)
-  lowcuts = [6.0, 9.0, 13.0, 18.0, 22.0]
+  highcut = min(90.0, nyq - 1.0)
+  lowcuts = [6.0, 14.0, 22.0]
   filters = []
   for low in lowcuts:
     b, a = cheby1(
-        4, 3, [low / nyq, highcut / nyq], btype='bandpass', output='ba'
+        4, 3, [low / nyq, highcut / nyq], btype="bandpass", output="ba"
     )
     filters.append((b, a))
   return filters
@@ -64,8 +64,9 @@ def extract_fbcca_features(
 
   reference_signals = []
   for f_i in target_freqs:
-    valid_nh = max(1, min(n_harmonics, int(np.floor(55.0 / f_i))))
-    ref = generate_reference_signals(f_i, fs, n_samples, n_harmonics=valid_nh)
+    ref = generate_reference_signals(
+        f_i, fs, n_samples, n_harmonics=n_harmonics
+    )
     reference_signals.append(ref)
 
   cca = CCA(n_components=1)
