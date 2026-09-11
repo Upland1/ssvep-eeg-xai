@@ -21,6 +21,7 @@ outputs/saved_models/*.joblib
 outputs/figures/
 outputs/reports/
 outputs/models/
+reports/
 
 # OS Specific
 .DS_Store
