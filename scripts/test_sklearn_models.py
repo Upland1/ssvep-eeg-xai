@@ -10,6 +10,24 @@ from src.features.fbcsp_extraction import extract_fbcsp_features
 from src.features.psd_extraction import extract_continuous_psd_features
 from src.models.sklearn_models import get_sklearn_model_suite
 
+FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
+
+
+def resolve_channel_names(n_channels: int, full_montage: list[str] = FULL_MONTAGE) -> list[str] | None:
+  """Match the actual channel count to known montage layouts."""
+  if n_channels == len(full_montage):
+    return list(full_montage)
+  if n_channels == len(full_montage) - 1:
+    print(
+        f"[!] {n_channels} channels found (expected {len(full_montage)}); "
+        "assuming PO7 is still missing from this data -- rerun "
+        "preprocessing to include it."
+    )
+    return full_montage[1:]
+  print(f"[!] Unexpected channel count ({n_channels}); channel names unavailable.")
+  return None
+
+
 parser = argparse.ArgumentParser(
     description="Test Scikit-Learn Linear and Discriminant models on SSVEP features."
 )
@@ -36,14 +54,20 @@ windows = (
 )
 
 print(f"Loaded {windows.shape[0]} windows across {windows.shape[1]} channels.")
+channel_names = resolve_channel_names(windows.shape[1])
 
-# 2. Extract verified features using validation gates
+# 2. Extract verified features using validation gates (two-tier: chronic
+# bad channels dropped per subject first, then remaining noisy windows)
 print("\nExtracting feature spaces...")
-X_psd, y_psd, mask_psd = extract_continuous_psd_features(
-    windows, y_stim, fs=250.0
+X_psd, y_psd, mask_psd, ch_report_psd = extract_continuous_psd_features(
+    windows, y_stim, fs=250.0, channel_names=channel_names
 )
-X_fbcca, y_fbcca, mask_fbcca = extract_fbcca_features(windows, y_stim, fs=250.0)
-X_fbcsp, y_fbcsp, mask_fbcsp = extract_fbcsp_features(windows, y_stim, fs=250.0)
+X_fbcca, y_fbcca, mask_fbcca, ch_report_fbcca = extract_fbcca_features(
+    windows, y_stim, fs=250.0, channel_names=channel_names
+)
+X_fbcsp, y_fbcsp, mask_fbcsp, ch_report_fbcsp = extract_fbcsp_features(
+    windows, y_stim, fs=250.0, channel_names=channel_names
+)
 
 feature_sets = {
     "PSD (Continuous)": (X_psd, y_psd),

@@ -2,7 +2,7 @@
 import numpy as np
 from scipy.signal import periodogram
 
-from src.preprocessing.quality_check import filter_dataset, validate_eeg_windows
+from src.preprocessing.quality_check import apply_artifact_quality_pipeline, validate_eeg_windows
 
 
 def extract_continuous_psd_features(
@@ -11,18 +11,40 @@ def extract_continuous_psd_features(
     fs: float = 250.0,
     freq_range: tuple[float, float] = (5.0, 35.0),
     use_db: bool = False,
-    vpp_limits: tuple[float, float] = (0.5, 120.0),
-    std_limits: tuple[float, float] = (0.1, 35.0),
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Validate windows and return flattened continuous-band PSD features."""
-    valid_mask = validate_eeg_windows(
+    channel_names: list[str] | None = None,
+    vpp_limits: tuple[float, float] = (5.0, 120.0),
+    std_limits: tuple[float, float] = (1.0, 35.0),
+    channel_fail_fraction_thresh: float = 0.5,
+    verbose: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+    """Validate windows (channel-level + window-level) and return flattened PSD features.
+
+    Same two-tier artifact-quality pipeline as the FBCCA/FBCSP extractors:
+    chronically bad channels are dropped for this subject first, then
+    remaining noisy windows are rejected on the surviving channels. PSD is
+    computed on the clean, channel-reduced data.
+
+    Returns
+    -------
+    X_psd : np.ndarray, shape (n_clean, n_channels_kept * n_freq_bins)
+    y_clean : np.ndarray, shape (n_clean,)
+    valid_mask : np.ndarray, shape (n_windows,)
+        Aligned with the ORIGINAL `windows` passed in.
+    channel_report : dict
+        See `extract_fbcca_features` docstring -- same structure.
+    """
+    qc = apply_artifact_quality_pipeline(
         windows,
+        y,
+        channel_names=channel_names,
         vpp_min=vpp_limits[0],
         vpp_max=vpp_limits[1],
         std_min=std_limits[0],
         std_max=std_limits[1],
+        channel_fail_fraction_thresh=channel_fail_fraction_thresh,
+        verbose=verbose,
     )
-    clean_windows, y_clean = filter_dataset(windows, y, valid_mask)
+    clean_windows, y_clean = qc["windows_clean"], qc["y_clean"]
 
     if clean_windows.shape[0] == 0:
         raise ValueError("All windows were rejected by the validation mask.")
@@ -36,7 +58,13 @@ def extract_continuous_psd_features(
 
     n_clean, n_channels, n_bins = psd_band.shape
     X_psd = psd_band.reshape(n_clean, n_channels * n_bins)
-    return X_psd, y_clean, valid_mask
+    channel_report = {
+        "channels_kept": qc["channels_kept"],
+        "channels_kept_idx": qc["channels_kept_idx"],
+        "channels_dropped": qc["channels_dropped"],
+        "channel_stats": qc["channel_stats"],
+    }
+    return X_psd, y_clean, qc["valid_mask"], channel_report
 
 
 def extract_clean_subwindows_psd(
@@ -46,8 +74,19 @@ def extract_clean_subwindows_psd(
     vpp_thresh: float = 200.0,
     std_range: tuple[float, float] = (0.5, 60.0),
     quality_stats: dict[str, int] | None = None,
+    vpp_min: float = 0.5,
 ) -> list[dict]:
-    """Slice an EEG segment into sub-windows, filter artifacts, and extract PSD."""
+    """Slice an EEG segment into sub-windows, filter artifacts, and extract PSD.
+
+    Note: this is the raw-acquisition-time quality gate used during
+    preprocessing (`run_preprocessing.py`), separate from the two-tier
+    channel-drop pipeline used by the feature extractors above. `vpp_min`
+    is set and passed explicitly here (default 0.5) so this stage never
+    silently inherits `validate_eeg_windows`'s default -- if that shared
+    default changes again for the feature-extraction quality gate, this
+    raw-preprocessing stage is unaffected.
+    """
+
     samples_per_sub = int(sub_window_sec * fs)
     n_sub = eeg_segment.shape[1] // samples_per_sub
     records = []
@@ -58,6 +97,7 @@ def extract_clean_subwindows_psd(
     # 
     valid_mask = validate_eeg_windows(
         subwindows,
+        vpp_min=vpp_min,
         vpp_max=vpp_thresh,
         std_min=std_range[0],
         std_max=std_range[1],

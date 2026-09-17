@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.linalg import eigh
 from scipy.signal import butter, filtfilt
-from src.preprocessing.quality_check import filter_dataset, validate_eeg_windows
+from src.preprocessing.quality_check import apply_artifact_quality_pipeline
 
 DEFAULT_SUBBANDS = [
     (7.0, 12.0),
@@ -81,22 +81,31 @@ def extract_fbcsp_features(
     fs: float = 250.0,
     subbands: list[tuple[float, float]] = DEFAULT_SUBBANDS,
     n_components: int = 1,
-    vpp_limits: tuple[float, float] = (0.5, 120.0),
-    std_limits: tuple[float, float] = (0.1, 35.0),
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-  """Validate windows and extract FBCSP features.
+    channel_names: list[str] | None = None,
+    vpp_limits: tuple[float, float] = (5.0, 120.0),
+    std_limits: tuple[float, float] = (1.0, 35.0),
+    channel_fail_fraction_thresh: float = 0.5,
+    verbose: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+  """Validate windows (channel-level + window-level) and extract FBCSP features.
 
-  Returns: (X_fbcsp, y_clean, valid_mask)
+  Same two-tier artifact-quality pipeline as `extract_fbcca_features`: bad
+  channels are dropped for this subject first, then remaining
+  noisy windows are rejected on the surviving channels. CSP is
+  fit per sub-band on the clean, channel-reduced data.
   """
-  # 1. Validation gate
-  valid_mask = validate_eeg_windows(
+  qc = apply_artifact_quality_pipeline(
       windows,
+      y,
+      channel_names=channel_names,
       vpp_min=vpp_limits[0],
       vpp_max=vpp_limits[1],
       std_min=std_limits[0],
       std_max=std_limits[1],
+      channel_fail_fraction_thresh=channel_fail_fraction_thresh,
+      verbose=verbose,
   )
-  clean_windows, y_clean = filter_dataset(windows, y, valid_mask)
+  clean_windows, y_clean = qc["windows_clean"], qc["y_clean"]
 
   if clean_windows.shape[0] == 0:
     raise ValueError("All windows were rejected by the validation mask.")
@@ -109,4 +118,10 @@ def extract_fbcsp_features(
     subband_features.append(csp.transform(X_sb))
 
   X_fbcsp = np.hstack(subband_features)
-  return X_fbcsp, y_clean, valid_mask
+  channel_report = {
+      "channels_kept": qc["channels_kept"],
+      "channels_kept_idx": qc["channels_kept_idx"],
+      "channels_dropped": qc["channels_dropped"],
+      "channel_stats": qc["channel_stats"],
+  }
+  return X_fbcsp, y_clean, qc["valid_mask"], channel_report
