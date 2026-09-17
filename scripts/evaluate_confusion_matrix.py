@@ -18,6 +18,24 @@ from src.features.fbcsp_extraction import (
     butter_bandpass_filter,
 )
 
+FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
+
+
+def resolve_channel_names(n_channels: int, full_montage: list[str] = FULL_MONTAGE) -> list[str] | None:
+  """Match the actual channel count to known montage layouts."""
+  if n_channels == len(full_montage):
+    return list(full_montage)
+  if n_channels == len(full_montage) - 1:
+    print(
+        f"[!] {n_channels} channels found (expected {len(full_montage)}); "
+        "assuming PO7 is still missing from this data -- rerun "
+        "preprocessing to include it."
+    )
+    return full_montage[1:]
+  print(f"[!] Unexpected channel count ({n_channels}); channel names unavailable.")
+  return None
+
+
 # 1. Parse CLI Arguments
 parser = argparse.ArgumentParser(
     description="Evaluate out-of-fold confusion matrix and smoothing for SSVEP hybrid model."
@@ -46,13 +64,19 @@ windows = (
     else windows_raw[: len(y_stim)]
 )
 
-# 3. Extract FBCCA with quality validation gate (filtering rejected artifact windows)
-X_fbcca, y_clean, valid_mask = extract_fbcca_features(windows, y_stim, fs=250.0)
-windows_clean = windows[valid_mask == 1]
+# 3. Extract FBCCA with the two-tier quality gate (chronic bad channels
+# dropped for this subject first, then remaining noisy windows rejected)
+channel_names = resolve_channel_names(windows.shape[1])
+X_fbcca, y_clean, valid_mask, ch_report = extract_fbcca_features(
+    windows, y_stim, fs=250.0, channel_names=channel_names
+)
+windows_clean = windows[valid_mask == 1][:, ch_report["channels_kept_idx"], :]
 
 print(f"Subject: {args.subject or 'Root'}")
 print(f"Verified clean windows shape: {windows_clean.shape}")
 print(f"Verified clean labels shape:  {y_clean.shape}")
+if ch_report["channels_dropped"]:
+  print(f"Channels dropped for this subject: {ch_report['channels_dropped']}")
 
 # 4. Stratified 5-Fold Cross-Validation (m=1 CSP component pair + FBCCA)
 skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)

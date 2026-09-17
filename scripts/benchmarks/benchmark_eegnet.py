@@ -11,8 +11,39 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedKFold
 
-from src.preprocessing.quality_check import filter_dataset, validate_eeg_windows
+from src.preprocessing.quality_check import apply_artifact_quality_pipeline
 from src.models.eegnet import EEGNetSSVEP
+
+# Full recorded montage (8 channels, per the project's actual acquisition
+# setup). PO7 used to be hard-excluded upstream before any artifact-quality
+# check ran -- it is now included here and left to the two-tier quality
+# pipeline to decide, per subject, whether it should be dropped.
+FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
+
+
+def resolve_channel_names(n_channels: int, full_montage: list[str] = FULL_MONTAGE) -> list[str] | None:
+  """Match the actual channel count in the data to known channel-name sets.
+
+  Handles both the current 8-channel montage and legacy data generated
+  before PO7 was added to the raw-preprocessing channel list, so nothing
+  breaks silently if not every subject's files have been regenerated yet.
+  """
+  if n_channels == len(full_montage):
+    return list(full_montage)
+  if n_channels == len(full_montage) - 1:
+    print(
+        f"[!] This subject's windows have {n_channels} channels (expected "
+        f"{len(full_montage)}: {full_montage}). Assuming PO7 is still "
+        "missing because these windows were generated before it was added "
+        "to the raw-preprocessing channel list -- rerun preprocessing for "
+        "this subject to include it."
+    )
+    return full_montage[1:]
+  print(
+      f"[!] Unexpected channel count ({n_channels}); channel names "
+      "unavailable for reporting, quality checks still run by index."
+  )
+  return None
 
 parser = argparse.ArgumentParser(description="Benchmark EEGNet on raw SSVEP EEG segments.")
 parser.add_argument("--subject", default="S03", help="Subject subdirectory (default: S03).")
@@ -32,9 +63,15 @@ stim_mask = np.isin(y_raw, [101, 102, 103, 104, 105])
 y_stim = y_raw[stim_mask]
 windows = windows_raw[stim_mask] if windows_raw.shape[0] == len(y_raw) else windows_raw[:len(y_stim)]
 
-# 2. Quality check (rejection of artifacts)
-valid_mask = validate_eeg_windows(windows, vpp_min=0.5, vpp_max=120.0, std_min=0.1, std_max=35.0)
-windows_clean, y_clean = filter_dataset(windows, y_stim, valid_mask)
+# 2. Two-tier artifact quality: drop chronically bad channels for this
+#    subject first (Tier 1), then reject remaining noisy windows on the
+#    surviving channels (Tier 2). Vpp >= 5, std >= 1 (raised from the
+#    previous 0.5 / 0.1 floors to catch flat/dead channels more reliably).
+channel_names = resolve_channel_names(windows.shape[1])
+qc = apply_artifact_quality_pipeline(
+    windows, y_stim, channel_names=channel_names, verbose=True
+)
+windows_clean, y_clean = qc["windows_clean"], qc["y_clean"]
 print(f"Subject: {args.subject} | Verified Clean Windows: {len(y_clean)} | Device: {args.device}")
 
 # 3. Class mapping 101-105 -> 0-4
@@ -51,7 +88,7 @@ for fold_idx, (train_idx, test_idx) in enumerate(skf.split(windows_clean, y_mapp
     X_te, y_te = windows_clean[test_idx], y_mapped[test_idx]
 
     # In-fold temporal standardization per channel
-    # Per-window, per-channel temporal standardization (dim -1 = 256 timepoints)
+    # Per-window, per-channel temporal standardization (dim -1 = timepoints)
     mean_tr = np.mean(X_tr, axis=-1, keepdims=True)
     std_tr = np.std(X_tr, axis=-1, keepdims=True) + 1e-8
     X_tr_norm = (X_tr - mean_tr) / std_tr
@@ -61,14 +98,15 @@ for fold_idx, (train_idx, test_idx) in enumerate(skf.split(windows_clean, y_mapp
     X_te_norm = (X_te - mean_te) / std_te
 
     # Convert to PyTorch Tensors
-    t_X_tr = torch.tensor(X_tr_norm, dtype=torch.float32).unsqueeze(1)  # (B, 1, 7, 256)
+    t_X_tr = torch.tensor(X_tr_norm, dtype=torch.float32).unsqueeze(1)  # (B, 1, C, T)
     t_y_tr = torch.tensor(y_tr, dtype=torch.long)
     t_X_te = torch.tensor(X_te_norm, dtype=torch.float32).unsqueeze(1).to(args.device)
 
     train_ds = TensorDataset(t_X_tr, t_y_tr)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
 
-    # Initialize model
+    # Initialize model (n_channels reflects however many channels survived
+    # Tier 1 channel dropping for THIS subject -- may be < 7)
     model = EEGNetSSVEP(
         n_classes=len(classes),
         n_channels=windows_clean.shape[1],
@@ -118,6 +156,8 @@ acc_smooth = accuracy_score(y_mapped, preds_smooth) * 100.0
 print("\n" + "=" * 70)
 print(f"            EEGNet BENCHMARK RESULTS (SUBJECT {args.subject})")
 print("=" * 70)
+if qc["channels_dropped"]:
+    print(f"Channels dropped for this subject: {qc['channels_dropped']}")
 print(f"Instantaneous 1.0s Accuracy:       {acc_1s:.2f}%")
 print(f"Trial-Aware 2.0s Smoothed Accuracy: {acc_smooth:.2f}%")
 print("=" * 70)

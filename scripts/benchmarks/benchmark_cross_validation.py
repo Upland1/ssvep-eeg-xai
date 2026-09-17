@@ -11,11 +11,45 @@ from src.features.fbcca_extraction import extract_fbcca_features
 from src.features.fbcsp_extraction import MulticlassCSP, butter_bandpass_filter, DEFAULT_SUBBANDS
 from src.models.sklearn_models import get_sklearn_model_suite
 
+# Full recorded montage (8 channels). The "visual" cluster is named
+# explicitly here -- selecting by NAME rather than fixed position [3,4,5,6]
+# is required now that PO7 is included as channel 0; a positional index
+# would silently point at the wrong electrodes, and it would ALSO break
+# after Tier-1 channel dropping since a subject's surviving channels don't
+# sit at fixed positions anymore.
+FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
+VISUAL_CHANNEL_NAMES = ["PO8", "O1", "Oz", "O2"]
+
+
+def resolve_channel_names(n_channels: int, full_montage: list[str] = FULL_MONTAGE) -> list[str] | None:
+  """Match the actual channel count to known montage layouts."""
+  if n_channels == len(full_montage):
+    return list(full_montage)
+  if n_channels == len(full_montage) - 1:
+    print(
+        f"[!] {n_channels} channels found (expected {len(full_montage)}); "
+        "assuming PO7 is still missing from this data -- rerun "
+        "preprocessing to include it."
+    )
+    return full_montage[1:]
+  print(f"[!] Unexpected channel count ({n_channels}); channel names unavailable.")
+  return None
+
+
+def get_visual_channel_indices(names: list[str] | None, n_channels: int) -> list[int]:
+  """Return indices of the occipital/visual cluster, resolved by NAME."""
+  if names is not None:
+    idx = [i for i, name in enumerate(names) if name in VISUAL_CHANNEL_NAMES]
+    if idx:
+      return idx
+  return [3, 4, 5, 6] if n_channels >= 7 else list(range(n_channels))
+
+
 parser = argparse.ArgumentParser(description="Run 5-Fold Cross-Validation across single and hybrid feature representations.")
 parser.add_argument("--subject", help="Subject folder (e.g., S01). Defaults to root processed.")
 args = parser.parse_args()
 
-project_root = Path(__file__).resolve().parents[1]
+project_root = Path(__file__).resolve().parents[2]
 data_dir = project_root / "data" / "processed"
 if args.subject:
     data_dir = data_dir / args.subject
@@ -31,12 +65,21 @@ windows = windows_raw[stim_mask] if windows_raw.shape[0] == len(y_raw) else wind
 # 2. Extract Base Features
 print(f"Loaded {windows.shape[0]} windows across {windows.shape[1]} channels.")
 print("Extracting feature representations...")
-X_psd_cont, y_clean, mask_clean = extract_continuous_psd_features(windows, y_stim, fs=250.0)
+channel_names_full = resolve_channel_names(windows.shape[1])
 
-# Filter windows array to match the artifact-free subset (197 windows)
-windows_clean = windows[mask_clean == 1]
+# Tier-1/Tier-2 quality gate #1 (continuous PSD extractor)
+X_psd_cont, y_clean, mask_psd, ch_report_psd = extract_continuous_psd_features(
+    windows, y_stim, fs=250.0, channel_names=channel_names_full
+)
+windows_clean = windows[mask_psd == 1][:, ch_report_psd["channels_kept_idx"], :]
 
-X_fbcca, _, _ = extract_fbcca_features(windows_clean, y_clean, fs=250.0)
+# Tier-1/Tier-2 quality gate #2 (FBCCA extractor, applied to the already-clean
+# windows_clean above). Kept as its own gate to mirror the original benchmark
+# structure; its outputs are what everything downstream is aligned to.
+X_fbcca, y_clean, mask_fbcca, ch_report_fbcca = extract_fbcca_features(
+    windows_clean, y_clean, fs=250.0, channel_names=ch_report_psd["channels_kept"]
+)
+windows_clean = windows_clean[mask_fbcca == 1][:, ch_report_fbcca["channels_kept_idx"], :]
 
 # Unsupervised FBCCA Baseline (argmax without any training)
 label_map = {0: 101, 1: 102, 2: 103, 3: 104, 4: 105}
@@ -44,8 +87,12 @@ unsupervised_preds = np.array([label_map[i] for i in np.argmax(X_fbcca, axis=1)]
 direct_fbcca_acc = accuracy_score(y_clean, unsupervised_preds) * 100.0
 print(f"\n>>> Direct Unsupervised FBCCA Baseline (No ML, Argmax): {direct_fbcca_acc:.2f}% <<<\n")
 
-# Targeted Harmonic PSD computed on CLEAN windows (197 samples)
-keep_ch = [3, 4, 5, 6] if windows_clean.shape[1] >= 7 else list(range(windows_clean.shape[1]))
+# Targeted Harmonic PSD, computed on the FINAL clean/channel-reduced windows
+# so it stays aligned with X_fbcca and y_clean. keep_ch is resolved by name.
+final_names = ch_report_fbcca["channels_kept"]
+keep_ch = get_visual_channel_indices(final_names, windows_clean.shape[1])
+if final_names:
+    print(f"Visual channel cluster used for harmonic PSD: {[final_names[i] for i in keep_ch]}")
 target_freqs = [8.57, 10.91, 15.0, 17.14, 20.0, 21.82, 24.0, 30.0]
 freqs = np.linspace(0.0, 125.0, windows_clean.shape[-1] // 2 + 1)
 target_idx = [np.argmin(np.abs(freqs - f)) for f in target_freqs]
@@ -60,7 +107,7 @@ models = get_sklearn_model_suite()
 test_models = {k: v for k, v in models.items() if "QDA" not in k}
 
 feature_spaces = {
-    "1. Continuous PSD": (X_psd_cont, False),
+    "1. Continuous PSD": (X_psd_cont[mask_fbcca == 1], False),
     "2. Harmonic PSD (Visual Ch)": (X_psd_harm, False),
     "3. FBCCA Priors": (X_fbcca, False),
     "4. Hybrid: Harmonic PSD + FBCCA": (np.hstack([X_psd_harm, X_fbcca]), False),

@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.signal import cheby1, filtfilt
 from sklearn.cross_decomposition import CCA
-from src.preprocessing.quality_check import filter_dataset, validate_eeg_windows
+from src.preprocessing.quality_check import apply_artifact_quality_pipeline
 
 TARGET_FREQS = np.array([24.0, 20.0, 15.0, 10.9091, 8.5714])
 
@@ -36,22 +36,32 @@ def extract_fbcca_features(
     fs: float = 250.0,
     target_freqs: np.ndarray = TARGET_FREQS,
     n_harmonics: int = 3,
-    vpp_limits: tuple[float, float] = (0.5, 120.0),
-    std_limits: tuple[float, float] = (0.1, 35.0),
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-  """Validate windows and extract multi-band FBCCA correlation scores.
+    channel_names: list[str] | None = None,
+    vpp_limits: tuple[float, float] = (5.0, 120.0),
+    std_limits: tuple[float, float] = (1.0, 35.0),
+    channel_fail_fraction_thresh: float = 0.5,
+    verbose: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+  """Validate windows (channel-level + window-level) and extract FBCCA scores.
 
-  Returns: (X_fbcca, y_clean, valid_mask)
+  Runs the two-tier artifact-quality pipeline first: chronically bad
+  channels are identified and dropped for this subject, then
+  individual windows still out of range on the surviving channels are
+  rejected. FBCCA correlation scores are computed only on the
+  clean, channel-reduced data.
   """
-  # 1. Validation gate
-  valid_mask = validate_eeg_windows(
+  qc = apply_artifact_quality_pipeline(
       windows,
+      y,
+      channel_names=channel_names,
       vpp_min=vpp_limits[0],
       vpp_max=vpp_limits[1],
       std_min=std_limits[0],
       std_max=std_limits[1],
+      channel_fail_fraction_thresh=channel_fail_fraction_thresh,
+      verbose=verbose,
   )
-  clean_windows, y_clean = filter_dataset(windows, y, valid_mask)
+  clean_windows, y_clean = qc["windows_clean"], qc["y_clean"]
 
   if clean_windows.shape[0] == 0:
     raise ValueError("All windows were rejected by the validation mask.")
@@ -91,4 +101,10 @@ def extract_fbcca_features(
 
     X_fbcca[w, :] = scores
 
-  return X_fbcca, y_clean, valid_mask
+  channel_report = {
+      "channels_kept": qc["channels_kept"],
+      "channels_kept_idx": qc["channels_kept_idx"],
+      "channels_dropped": qc["channels_dropped"],
+      "channel_stats": qc["channel_stats"],
+  }
+  return X_fbcca, y_clean, qc["valid_mask"], channel_report
