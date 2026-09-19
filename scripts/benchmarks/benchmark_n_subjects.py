@@ -1,9 +1,11 @@
-"""Evaluate FBCSP + FBCCA -> Shrinkage-LDA across all available subjects.
+"""Evaluate FBCSP (m=1) + FBCCA -> Shrinkage-LDA across ALL available subjects.
 
-subjects are auto-discovered from `data/processed/`, so
-this scales any N subjects without editing the script. Each
+Generalized version of the original 5-subject benchmark: subjects are
+auto-discovered from `data/processed/` instead of being hard-coded, so
+this scales to 5, 45, or any N subjects without editing the script. Each
 subject is processed independently (its own channel-drop decision, its
-own CV folds), so adding subjects only adds linear wall-clock time and since subjects are independent, the loop can
+own CV folds), so adding subjects only adds linear wall-clock time, not
+algorithmic complexity -- and since subjects are independent, the loop can
 optionally run in parallel across CPU cores with `--n-jobs`.
 """
 
@@ -15,7 +17,7 @@ import numpy as np
 import pandas as pd
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
 
 from src.features.fbcca_extraction import extract_fbcca_features
@@ -24,19 +26,21 @@ from src.features.fbcsp_extraction import (
     MulticlassCSP,
     butter_bandpass_filter,
 )
+from src.preprocessing.cv_utils import build_trial_ids
 
 # Full recorded montage (8 channels, per the project's actual acquisition
 # setup). PO7 used to be hard-excluded upstream before any artifact-quality
 # check ran -- it is now included here and left to the two-tier quality
 # pipeline to decide, per subject, whether it should be dropped.
 FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
-SUBJECT_DIR_PATTERN = re.compile(r"^S\d+$")  
+SUBJECT_DIR_PATTERN = re.compile(r"^S\d+$")  # matches S01, S02, ..., S45, ...
 
 
 def resolve_channel_names(n_channels: int, full_montage: list[str] = FULL_MONTAGE) -> list[str] | None:
   """Match the actual channel count in the data to known channel-name sets.
 
-  Handles the current 8-channel montage, so nothing
+  Handles both the current 8-channel montage and legacy data generated
+  before PO7 was added to the raw-preprocessing channel list, so nothing
   breaks silently if not every subject's files have been regenerated yet.
   """
   if n_channels == len(full_montage):
@@ -44,7 +48,7 @@ def resolve_channel_names(n_channels: int, full_montage: list[str] = FULL_MONTAG
   if n_channels == len(full_montage) - 1:
     print(
         f"    [!] {n_channels} channels found (expected {len(full_montage)}); "
-        "assuming a channel is missing from subject's raw windows -- "
+        "assuming PO7 is still missing from this subject's raw windows -- "
         "rerun preprocessing for this subject to include it."
     )
     return full_montage[1:]
@@ -55,7 +59,7 @@ def resolve_channel_names(n_channels: int, full_montage: list[str] = FULL_MONTAG
 def discover_subjects(data_root: Path) -> list[str]:
   """Return every subject folder name under `data_root` matching S<digits>.
 
-  Auto-discovery means adding subject n `data/processed/`
+  Auto-discovery means adding subject 6, 20, or 45 to `data/processed/`
   is enough -- no script edits required.
   """
   if not data_root.exists():
@@ -92,8 +96,8 @@ def process_subject(sub: str, data_root: Path) -> dict | None:
   )
   channel_names = resolve_channel_names(windows.shape[1])
 
-  # Two-part artifact quality (channel-level drop, then window-level gate)
-  # + FBCCA, computed once and shared across CV folds (FBCCA
+  # Two-tier artifact quality (channel-level drop, then window-level gate)
+  # + FBCCA, computed once and shared across CV folds (leak-free: FBCCA
   # templates are fixed sinusoidal references, not fit on the data).
   X_fbcca, y_clean, valid_mask, ch_report = extract_fbcca_features(
       windows, y_stim, fs=250.0, channel_names=channel_names, verbose=False
@@ -102,15 +106,23 @@ def process_subject(sub: str, data_root: Path) -> dict | None:
   n_clean = len(y_clean)
   classes = np.unique(y_clean)
 
+  # Trial ids computed on the PRE-quality-gate label array, then filtered
+  # the same way as y_clean -- so sub-windows of the same 5.0s trial never
+  # split across train/test folds (they share near-identical artifacts,
+  # which would otherwise let the model partly "recognize the trial"
+  # instead of learning the SSVEP frequency).
+  trial_ids_full = build_trial_ids(y_stim, sub_windows_per_trial=5)
+  trial_ids_clean = trial_ids_full[valid_mask == 1]
+
   if n_clean < 10 or len(classes) < 2:
     print(f"[-] Skipping {sub}: not enough clean windows/classes after QC.")
     return None
 
-  # Stratified 5-Fold Cross-Validation
-  skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+  # Stratified GROUP 5-Fold Cross-Validation (group = trial id)
+  skf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
   oof_probs = np.zeros((n_clean, len(classes)))
 
-  for train_idx, test_idx in skf.split(windows_clean, y_clean):
+  for train_idx, test_idx in skf.split(windows_clean, y_clean, groups=trial_ids_clean):
     y_tr, y_te = y_clean[train_idx], y_clean[test_idx]
 
     # In-fold FBCSP (fit strictly on the training fold to avoid leakage)
@@ -175,7 +187,7 @@ def process_subject(sub: str, data_root: Path) -> dict | None:
 
 def main():
   parser = argparse.ArgumentParser(
-      description="FBCSP + FBCCA -> Shrinkage-LDA benchmark across all discovered subjects."
+      description="FBCSP (m=1) + FBCCA -> Shrinkage-LDA benchmark across all discovered subjects."
   )
   parser.add_argument(
       "--n-jobs", type=int, default=1,

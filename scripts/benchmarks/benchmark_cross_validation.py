@@ -2,7 +2,7 @@ import argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
 
@@ -10,6 +10,7 @@ from src.features.psd_extraction import extract_continuous_psd_features
 from src.features.fbcca_extraction import extract_fbcca_features
 from src.features.fbcsp_extraction import MulticlassCSP, butter_bandpass_filter, DEFAULT_SUBBANDS
 from src.models.sklearn_models import get_sklearn_model_suite
+from src.preprocessing.cv_utils import build_trial_ids
 
 # Full recorded montage (8 channels). The "visual" cluster is named
 # explicitly here -- selecting by NAME rather than fixed position [3,4,5,6]
@@ -81,6 +82,12 @@ X_fbcca, y_clean, mask_fbcca, ch_report_fbcca = extract_fbcca_features(
 )
 windows_clean = windows_clean[mask_fbcca == 1][:, ch_report_fbcca["channels_kept_idx"], :]
 
+# Trial ids computed on the PRE-quality-gate label array, then chained
+# through BOTH gates the same way y_clean/windows_clean are -- sub-windows
+# of the same 5.0s trial must never split across train/test folds.
+trial_ids_full = build_trial_ids(y_stim, sub_windows_per_trial=5)
+trial_ids_clean = trial_ids_full[mask_psd == 1][mask_fbcca == 1]
+
 # Unsupervised FBCCA Baseline (argmax without any training)
 label_map = {0: 101, 1: 102, 2: 103, 3: 104, 4: 105}
 unsupervised_preds = np.array([label_map[i] for i in np.argmax(X_fbcca, axis=1)])
@@ -100,7 +107,7 @@ fft_vals = np.abs(np.fft.rfft(windows_clean[:, keep_ch, :], axis=-1)) ** 2
 X_psd_harm = fft_vals[:, :, target_idx].reshape(windows_clean.shape[0], -1)
 
 # 3. Setup Cross-Validation
-skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+skf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
 models = get_sklearn_model_suite()
 
 # Exclude QDA on high-dim spaces to prevent rank failure
@@ -127,7 +134,7 @@ for feat_name, (data_obj, is_csp) in feature_spaces.items():
     for model_name, clf_template in test_models.items():
         fold_accs = []
         
-        for train_idx, test_idx in skf.split(windows_clean, y_clean):
+        for train_idx, test_idx in skf.split(windows_clean, y_clean, groups=trial_ids_clean):
             y_tr, y_te = y_clean[train_idx], y_clean[test_idx]
             
             # Proper Leak-Free CSP transformation inside the fold

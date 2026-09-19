@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
 
 from src.features.fbcca_extraction import extract_fbcca_features
@@ -17,6 +17,7 @@ from src.features.fbcsp_extraction import (
     MulticlassCSP,
     butter_bandpass_filter,
 )
+from src.preprocessing.cv_utils import build_trial_ids
 
 FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
 
@@ -72,6 +73,12 @@ X_fbcca, y_clean, valid_mask, ch_report = extract_fbcca_features(
 )
 windows_clean = windows[valid_mask == 1][:, ch_report["channels_kept_idx"], :]
 
+# Trial ids computed on the PRE-quality-gate label array, then filtered
+# the same way as y_clean -- sub-windows of the same 5.0s trial must never
+# split across train/test folds.
+trial_ids_full = build_trial_ids(y_stim, sub_windows_per_trial=5)
+trial_ids_clean = trial_ids_full[valid_mask == 1]
+
 print(f"Subject: {args.subject or 'Root'}")
 print(f"Verified clean windows shape: {windows_clean.shape}")
 print(f"Verified clean labels shape:  {y_clean.shape}")
@@ -79,10 +86,10 @@ if ch_report["channels_dropped"]:
   print(f"Channels dropped for this subject: {ch_report['channels_dropped']}")
 
 # 4. Stratified 5-Fold Cross-Validation (m=1 CSP component pair + FBCCA)
-skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+skf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
 oof_probs = np.zeros((len(y_clean), 5))
 
-for train_idx, test_idx in skf.split(windows_clean, y_clean):
+for train_idx, test_idx in skf.split(windows_clean, y_clean, groups=trial_ids_clean):
   y_tr, y_te = y_clean[train_idx], y_clean[test_idx]
 
   X_tr_fold, X_te_fold = [], []

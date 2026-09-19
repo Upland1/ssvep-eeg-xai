@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
 
 from src.features.fbcca_extraction import extract_fbcca_features
@@ -15,6 +15,25 @@ from src.features.fbcsp_extraction import (
     butter_bandpass_filter,
 )
 from src.features.feature_selection import select_k_best_fbcsp_features
+from src.preprocessing.cv_utils import build_trial_ids
+
+FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
+
+
+def resolve_channel_names(n_channels: int, full_montage: list[str] = FULL_MONTAGE) -> list[str] | None:
+  """Match the actual channel count to known montage layouts."""
+  if n_channels == len(full_montage):
+    return list(full_montage)
+  if n_channels == len(full_montage) - 1:
+    print(
+        f"[!] {n_channels} channels found (expected {len(full_montage)}); "
+        "assuming PO7 is still missing from this data -- rerun "
+        "preprocessing to include it."
+    )
+    return full_montage[1:]
+  print(f"[!] Unexpected channel count ({n_channels}); channel names unavailable.")
+  return None
+
 
 parser = argparse.ArgumentParser(
     description="Benchmark Feature Selection on SSVEP Hybrid Space."
@@ -46,13 +65,25 @@ windows = (
     else windows_raw[: len(y_stim)]
 )
 
-# 2. Extract FBCCA & validation mask
-X_fbcca, y_clean, valid_mask = extract_fbcca_features(windows, y_stim, fs=250.0)
-windows_clean = windows[valid_mask == 1]
+# 2. Extract FBCCA & validation mask (two-tier: chronic bad channels dropped
+# for this subject first, then remaining noisy windows rejected)
+channel_names = resolve_channel_names(windows.shape[1])
+X_fbcca, y_clean, valid_mask, ch_report = extract_fbcca_features(
+    windows, y_stim, fs=250.0, channel_names=channel_names
+)
+windows_clean = windows[valid_mask == 1][:, ch_report["channels_kept_idx"], :]
 print(f"Subject: {args.subject} | Verified clean windows: {len(y_clean)}")
+if ch_report["channels_dropped"]:
+  print(f"Channels dropped for this subject: {ch_report['channels_dropped']}")
+
+# Trial ids computed on the PRE-quality-gate label array, then filtered
+# the same way as y_clean -- sub-windows of the same 5.0s trial must never
+# split across train/test folds.
+trial_ids_full = build_trial_ids(y_stim, sub_windows_per_trial=5)
+trial_ids_clean = trial_ids_full[valid_mask == 1]
 
 # 3. Setup Cross-Validation
-skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+skf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
 classes = np.unique(y_clean)
 
 # Containers for out-of-fold probability predictions
@@ -65,7 +96,7 @@ methods = [
 oof_probs = {m: np.zeros((len(y_clean), len(classes))) for m in methods}
 
 for fold_idx, (train_idx, test_idx) in enumerate(
-    skf.split(windows_clean, y_clean), 1
+    skf.split(windows_clean, y_clean, groups=trial_ids_clean), 1
 ):
     y_tr, y_te = y_clean[train_idx], y_clean[test_idx]
 

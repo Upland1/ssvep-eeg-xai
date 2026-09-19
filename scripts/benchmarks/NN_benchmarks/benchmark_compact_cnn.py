@@ -14,9 +14,10 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 
 from src.preprocessing.quality_check import apply_artifact_quality_pipeline
+from src.preprocessing.cv_utils import build_trial_ids
 from src.models.compact_cnn import CompactCNN
 
 SCALP_CHANNELS = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
@@ -46,7 +47,7 @@ parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate (defau
 parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
 args = parser.parse_args()
 
-project_root = Path(__file__).resolve().parents[2]
+project_root = Path(__file__).resolve().parents[3]
 data_dir = project_root / "data" / "processed" / args.subject
 
 # 1. Load data
@@ -64,6 +65,13 @@ qc = apply_artifact_quality_pipeline(
     windows, y_stim, channel_names=channel_names, verbose=True
 )
 windows_clean, y_clean = qc["windows_clean"], qc["y_clean"]
+
+# Trial ids computed on the PRE-quality-gate label array, then filtered
+# the same way as y_clean -- sub-windows of the same 5.0s trial must
+# never split across train/test folds (they share near-identical
+# artifacts/electrode state, which a CNN can exploit as a shortcut).
+trial_ids_full = build_trial_ids(y_stim, sub_windows_per_trial=5)
+trial_ids_clean = trial_ids_full[qc["valid_mask"] == 1]
 print(f"Subject: {args.subject} | Verified Clean Windows: {len(y_clean)} | Device: {args.device}")
 
 # 3. Class mapping 101-105 -> 0-4
@@ -72,10 +80,10 @@ class_to_idx = {c: i for i, c in enumerate(classes)}
 y_mapped = np.array([class_to_idx[c] for c in y_clean])
 
 # 4. Stratified 5-Fold Cross-Validation
-skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+skf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
 oof_probs = np.zeros((len(y_clean), len(classes)))
 
-for fold_idx, (train_idx, test_idx) in enumerate(skf.split(windows_clean, y_mapped), 1):
+for fold_idx, (train_idx, test_idx) in enumerate(skf.split(windows_clean, y_mapped, groups=trial_ids_clean), 1):
     X_tr, y_tr = windows_clean[train_idx], y_mapped[train_idx]
     X_te, y_te = windows_clean[test_idx], y_mapped[test_idx]
 

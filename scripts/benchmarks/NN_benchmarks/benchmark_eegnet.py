@@ -9,10 +9,12 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedGroupKFold
 
 from src.preprocessing.quality_check import apply_artifact_quality_pipeline
+from src.preprocessing.cv_utils import build_trial_ids
 from src.models.eegnet import EEGNetSSVEP
+from src.preprocessing.augmentation import SSVEPAugmentedDataset
 
 # Full recorded montage (8 channels, per the project's actual acquisition
 # setup). PO7 used to be hard-excluded upstream before any artifact-quality
@@ -51,9 +53,15 @@ parser.add_argument("--epochs", type=int, default=150, help="Training epochs per
 parser.add_argument("--batch-size", type=int, default=32, help="Batch size (default: 32).")
 parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate (default: 1e-3).")
 parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+parser.add_argument(
+    "--augment", action="store_true",
+    help="Apply on-the-fly training-only augmentation (noise, amplitude "
+         "scaling, time-shift, intra-class mixup). Off by default so you "
+         "can A/B this flag against the baseline.",
+)
 args = parser.parse_args()
 
-project_root = Path(__file__).resolve().parents[2]
+project_root = Path(__file__).resolve().parents[3]
 data_dir = project_root / "data" / "processed" / args.subject
 
 # 1. Load data
@@ -72,6 +80,13 @@ qc = apply_artifact_quality_pipeline(
     windows, y_stim, channel_names=channel_names, verbose=True
 )
 windows_clean, y_clean = qc["windows_clean"], qc["y_clean"]
+
+# Trial ids computed on the PRE-quality-gate label array, then filtered
+# the same way as y_clean -- sub-windows of the same 5.0s trial must
+# never split across train/test folds (they share near-identical
+# artifacts/electrode state, which a CNN can exploit as a shortcut).
+trial_ids_full = build_trial_ids(y_stim, sub_windows_per_trial=5)
+trial_ids_clean = trial_ids_full[qc["valid_mask"] == 1]
 print(f"Subject: {args.subject} | Verified Clean Windows: {len(y_clean)} | Device: {args.device}")
 
 # 3. Class mapping 101-105 -> 0-4
@@ -80,10 +95,10 @@ class_to_idx = {c: i for i, c in enumerate(classes)}
 y_mapped = np.array([class_to_idx[c] for c in y_clean])
 
 # 4. Stratified 5-Fold Cross-Validation
-skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+skf = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
 oof_probs = np.zeros((len(y_clean), len(classes)))
 
-for fold_idx, (train_idx, test_idx) in enumerate(skf.split(windows_clean, y_mapped), 1):
+for fold_idx, (train_idx, test_idx) in enumerate(skf.split(windows_clean, y_mapped, groups=trial_ids_clean), 1):
     X_tr, y_tr = windows_clean[train_idx], y_mapped[train_idx]
     X_te, y_te = windows_clean[test_idx], y_mapped[test_idx]
 
@@ -97,12 +112,18 @@ for fold_idx, (train_idx, test_idx) in enumerate(skf.split(windows_clean, y_mapp
     std_te = np.std(X_te, axis=-1, keepdims=True) + 1e-8
     X_te_norm = (X_te - mean_te) / std_te
 
-    # Convert to PyTorch Tensors
-    t_X_tr = torch.tensor(X_tr_norm, dtype=torch.float32).unsqueeze(1)  # (B, 1, C, T)
-    t_y_tr = torch.tensor(y_tr, dtype=torch.long)
+    # Convert to PyTorch Tensors. Augmentation (if enabled) is applied ONLY
+    # here, to the training fold -- t_X_te below is untouched, always the
+    # real, un-augmented held-out data.
     t_X_te = torch.tensor(X_te_norm, dtype=torch.float32).unsqueeze(1).to(args.device)
 
-    train_ds = TensorDataset(t_X_tr, t_y_tr)
+    if args.augment:
+      train_ds = SSVEPAugmentedDataset(X_tr_norm, y_tr, seed=42 + fold_idx)
+    else:
+      t_X_tr = torch.tensor(X_tr_norm, dtype=torch.float32).unsqueeze(1)  # (B, 1, C, T)
+      t_y_tr = torch.tensor(y_tr, dtype=torch.long)
+      train_ds = TensorDataset(t_X_tr, t_y_tr)
+
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
 
     # Initialize model (n_channels reflects however many channels survived
@@ -156,6 +177,7 @@ acc_smooth = accuracy_score(y_mapped, preds_smooth) * 100.0
 print("\n" + "=" * 70)
 print(f"            EEGNet BENCHMARK RESULTS (SUBJECT {args.subject})")
 print("=" * 70)
+print(f"Training augmentation: {'ON' if args.augment else 'OFF'}")
 if qc["channels_dropped"]:
     print(f"Channels dropped for this subject: {qc['channels_dropped']}")
 print(f"Instantaneous 1.0s Accuracy:       {acc_1s:.2f}%")
