@@ -24,6 +24,8 @@ outputs/saved_models/
 # Generated output directories by default
 outputs/figures/
 outputs/reports/
+outputs/models/
+reports/
 
 # OS Specific
 .DS_Store

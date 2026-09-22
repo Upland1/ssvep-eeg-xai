@@ -9,16 +9,24 @@ project:
     - 103  # Stimulus target 3
     - 104  # Stimulus target 4
     - 105  # Stimulus target 5
-
+ 
 paths:
   data_raw_dir: "data/raw"
   data_processed_dir: "data/processed"
   figures_dir: "outputs/figures"
   reports_dir: "outputs/reports"
   saved_models_dir: "outputs/saved_models"
-
+ 
 channels:
+  # All 8 recorded scalp/occipital channels are kept here. No channel is
+  # excluded at this stage -- PO7 used to be hard-excluded before any
+  # artifact-quality check ever ran. Now every channel flows into
+  # X_time_windows.npy, and the two-tier quality pipeline
+  # (quality_check.apply_artifact_quality_pipeline) decides -- per
+  # subject, based on actual signal quality -- whether PO7 (or any other
+  # channel) gets dropped.
   scalp:
+    - "PO7"
     - "PO3"
     - "POz"
     - "PO4"
@@ -26,13 +34,12 @@ channels:
     - "O1"
     - "Oz"
     - "O2"
-  excluded:
-    - "PO7"
+  excluded: []
   mark_channel: "MARK"
   auxiliary:
     - "TIMESTAMP"
     - "FLASHINGTIME"
-
+ 
 preprocessing:
   lowcut_hz: 1.0
   highcut_hz: 60.0
@@ -46,11 +53,11 @@ preprocessing:
     stimulus_duration_sec: 5.0
     pre_stim_cross_sec: 2.0
     cue_lookback_sec: 1.0
-
+ 
 features:
   psd_range_hz: [5.0, 35.0]
   plotting_range_hz: [1.0, 60.0]
-
+ 
 training:
   cv_splits: 5
   random_state: 42

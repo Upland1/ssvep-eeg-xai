@@ -238,3 +238,29 @@ if __name__ == "__main__":
         target_names=[str(condition) for condition in target_conditions],
     ))
     print(f"EEGNet 5-Fold Mean Accuracy: {metrics['mean_accuracy'] * 100:.2f}%")
+
+
+class EEGNetSSVEP(EEGNet):
+    """Compatibility wrapper for the benchmark-facing EEGNet API."""
+
+    def __init__(
+        self,
+        n_classes: int = 5,
+        n_channels: int = 7,
+        n_samples: int = 256,
+        F1: int = 8,
+        D: int = 2,
+        F2: int = 16,
+        kernel_length: int = 125,
+        dropout_rate: float = 0.25,
+    ):
+        super().__init__(
+            num_classes=n_classes,
+            n_channels=n_channels,
+            n_samples=n_samples,
+            f1=F1,
+            d=D,
+            f2=F2,
+            kernel_length_sec=kernel_length / 250.0,
+            dropout_rate=dropout_rate,
+        )

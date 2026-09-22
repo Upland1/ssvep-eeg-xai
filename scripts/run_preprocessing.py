@@ -10,7 +10,7 @@ from src.features.psd_extraction import (
 from src.io.ebr_parser import load_ebr_file
 from src.preprocessing.filters import apply_iir_bandpass
 from src.visualization.signal_plots import plot_average_psd_by_condition
-
+from src.preprocessing.quality_check import identify_noisy_channels, summarize_window_quality
 
 def main():
     config_path = Path(__file__).resolve().parents[1] / "configs" / "pipeline_config.yaml"
@@ -18,7 +18,7 @@ def main():
         config = yaml.safe_load(f)
 
     base_dir = Path(__file__).resolve().parents[1]
-    file_path = base_dir / config["paths"]["data_raw_dir"] / "S01" / "OO.ebr"
+    file_path = base_dir / config["paths"]["data_raw_dir"] / "S03" / "OO.ebr"
 
     recording = load_ebr_file(file_path)
     fs = recording["sampling_rate"]
@@ -42,7 +42,31 @@ def main():
         order=config["preprocessing"]["filter_order"],
     )
 
+    # Remove chronically bad channels before the per-window quality gate.
+    samples_per_sub = int(config["preprocessing"]["sub_window_sec"] * fs)
+    n_quality_windows = filtered_eeg.shape[1] // samples_per_sub
+    quality_windows = np.stack([
+        filtered_eeg[:, i * samples_per_sub:(i + 1) * samples_per_sub]
+        for i in range(n_quality_windows)
+    ])
+    noisy_indices, _ = identify_noisy_channels(
+        quality_windows,
+        channel_names=scalp_channels,
+        vpp_min=5,
+        vpp_max=config["preprocessing"]["vpp_thresh_uv"],
+        std_min=config["preprocessing"]["std_range"][0],
+        std_max=config["preprocessing"]["std_range"][1],
+    )
+    if noisy_indices:
+        noisy_names = [scalp_channels[i] for i in noisy_indices]
+        print(f"Dropping chronically noisy channels: {noisy_names}")
+        keep_indices = [i for i in range(len(scalp_channels)) if i not in noisy_indices]
+        filtered_eeg = filtered_eeg[keep_indices, :]
+        scalp_channels = [scalp_channels[i] for i in keep_indices]
+        quality_windows = quality_windows[:, keep_indices, :]
+
     stimulus_targets = [c for c in config["project"]["target_conditions"] if c not in (201, 202)]
+    quality_stats = {"total": 0, "accepted": 0, "rejected": 0}
 
     condition_records = process_condition_windows_with_baseline(
         filtered_eeg,
@@ -56,6 +80,14 @@ def main():
         std_range=tuple(config["preprocessing"]["std_range"]),
         stim_duration_sec=config["preprocessing"]["baseline"]["stimulus_duration_sec"],
         cue_lookback_sec=config["preprocessing"]["baseline"]["cue_lookback_sec"],
+        quality_stats=quality_stats,
+    )
+
+    print(
+        "Window quality validation: "
+        f"{quality_stats['accepted']} accepted, "
+        f"{quality_stats['rejected']} rejected, "
+        f"{quality_stats['total']} total"
     )
 
     # Print validation of window balance
@@ -96,7 +128,13 @@ def main():
     )
 
     print("Preprocessing completed successfully.")
-
+    summarize_window_quality(
+        quality_windows,
+        vpp_min=0.5,
+        vpp_max=config["preprocessing"]["vpp_thresh_uv"],
+        std_min=config["preprocessing"]["std_range"][0],
+        std_max=config["preprocessing"]["std_range"][1],
+    )
 
 if __name__ == "__main__":
     main()
