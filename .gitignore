@@ -26,6 +26,7 @@ outputs/saved_models/
 # Generated Output Directories
 outputs/figures/
 outputs/reports/
+outputs/models/
 reports/
 
 # OS Specific
