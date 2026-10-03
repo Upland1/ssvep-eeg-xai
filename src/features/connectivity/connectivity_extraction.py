@@ -412,6 +412,54 @@ def benjamini_hochberg(p_values: np.ndarray, alpha: float = 0.05) -> np.ndarray:
   return sig
 
 
+def _trial_permutation_split(
+    rng: np.random.RandomState,
+    pooled_trial_ids: np.ndarray,
+    n_stim: int,
+) -> tuple[np.ndarray, np.ndarray]:
+  """Randomly split pooled windows into pseudo-stimulus / pseudo-baseline
+  groups by WHOLE TRIALS, while keeping the window counts equal to the
+  observed ones (n_stim windows vs the remainder).
+
+  Why trials, not windows: the 5 sub-windows of a stimulus trial (and the
+  2 of a fixation trial) are consecutive slices of one continuous signal,
+  so they are NOT exchangeable under H0 -- permuting them individually
+  breaks that dependence structure and makes the null too narrow
+  (anti-conservative p-values). Why matched window counts: the coherence
+  estimator's small-sample bias depends on how many windows are averaged,
+  so the null groups must have the same sizes as the observed ones (this
+  is what let the old window-level test cancel the bias; it must be kept).
+
+  Greedy fill: visit trials in random order and add a trial to the
+  pseudo-stimulus group if it still fits; if a deficit of a few windows
+  remains at the end, take just that many windows from one remaining
+  trial (at most ONE trial is ever split between groups).
+  """
+  trials = np.unique(pooled_trial_ids)
+  sizes = {t: int(np.sum(pooled_trial_ids == t)) for t in trials}
+  order = rng.permutation(trials)
+
+  chosen, total = [], 0
+  for t in order:
+    if total == n_stim:
+      break
+    if total + sizes[t] <= n_stim:
+      chosen.append(t)
+      total += sizes[t]
+
+  stim_idx = np.flatnonzero(np.isin(pooled_trial_ids, chosen))
+  deficit = n_stim - len(stim_idx)
+  if deficit > 0:
+    leftovers = [t for t in order if t not in set(chosen)]
+    donor = leftovers[0]
+    donor_idx = np.flatnonzero(pooled_trial_ids == donor)
+    stim_idx = np.concatenate([stim_idx, donor_idx[:deficit]])
+
+  mask = np.zeros(len(pooled_trial_ids), dtype=bool)
+  mask[stim_idx] = True
+  return np.flatnonzero(mask), np.flatnonzero(~mask)
+
+
 def _run_single_permutation(
     seed: int,
     pooled: np.ndarray,
@@ -419,14 +467,22 @@ def _run_single_permutation(
     fs: float,
     freq_band: tuple[float, float],
     method_fn,
+    pooled_trial_ids: np.ndarray | None = None,
 ) -> np.ndarray:
-  """Helper worker for running one permutation iteration."""
+  """Helper worker for running one permutation iteration.
+
+  If `pooled_trial_ids` is given, labels are permuted at the TRIAL level
+  (window counts matched to the observed groups); otherwise falls back to
+  the legacy window-level shuffle.
+  """
   rng = np.random.RandomState(seed)
-  perm = rng.permutation(len(pooled))
-  pseudo_stim = pooled[perm[:n_stim]]
-  pseudo_base = pooled[perm[n_stim:]]
-  m_stim = method_fn(pseudo_stim, fs=fs, freq_band=freq_band)
-  m_base = method_fn(pseudo_base, fs=fs, freq_band=freq_band)
+  if pooled_trial_ids is not None:
+    stim_idx, base_idx = _trial_permutation_split(rng, pooled_trial_ids, n_stim)
+  else:
+    perm = rng.permutation(len(pooled))
+    stim_idx, base_idx = perm[:n_stim], perm[n_stim:]
+  m_stim = method_fn(pooled[stim_idx], fs=fs, freq_band=freq_band)
+  m_base = method_fn(pooled[base_idx], fs=fs, freq_band=freq_band)
   return m_stim - m_base
 
 
@@ -440,8 +496,17 @@ def compute_permutation_test(
     n_jobs: int = -1,
     random_state: int = 42,
     alpha: float = 0.05,
+    stim_trial_ids: np.ndarray | None = None,
+    baseline_trial_ids: np.ndarray | None = None,
 ) -> dict:
   """Non-parametric permutation test comparing stimulus vs matched baseline connectivity.
+
+  If `stim_trial_ids` AND `baseline_trial_ids` are given (one id per window,
+  unique across the two arrays -- e.g. from `build_trial_ids`), the null is
+  built by permuting WHOLE TRIALS with group window-counts matched to the
+  observed ones (see `_trial_permutation_split`). Without them it falls
+  back to the legacy window-level shuffle, which treats the consecutive
+  sub-windows of a trial as independent and is therefore too liberal.
 
   Null hypothesis (H0): Window labels (stimulus vs rest) are exchangeable in this frequency band.
   Observed test statistic:
@@ -479,6 +544,13 @@ def compute_permutation_test(
   # 2. Pool windows and generate seeds
   pooled = np.concatenate([stim_windows, baseline_windows], axis=0)
   n_stim = len(stim_windows)
+  pooled_trial_ids = None
+  if stim_trial_ids is not None and baseline_trial_ids is not None:
+    if len(stim_trial_ids) != len(stim_windows) or len(baseline_trial_ids) != len(baseline_windows):
+      raise ValueError("trial id arrays must have one id per window")
+    pooled_trial_ids = np.concatenate([stim_trial_ids, baseline_trial_ids])
+    if np.intersect1d(stim_trial_ids, baseline_trial_ids).size:
+      raise ValueError("stimulus and baseline trial ids must not overlap")
   master_rng = np.random.RandomState(random_state)
   perm_seeds = master_rng.randint(0, 2**31 - 1, size=n_permutations)
 
@@ -491,6 +563,7 @@ def compute_permutation_test(
           fs=fs,
           freq_band=freq_band,
           method_fn=method_fn,
+          pooled_trial_ids=pooled_trial_ids,
       )
       for s in perm_seeds
   )
@@ -556,6 +629,7 @@ def compute_permutation_test(
       "n_significant_edges_uncorrected": int(np.sum(uncorr_sig_1d)),
       "n_significant_edges_fdr": int(np.sum(fdr_sig_1d)),
       "total_edges": n_edges,
+      "permutation_unit": "trial" if pooled_trial_ids is not None else "window",
   }
 
 
@@ -577,6 +651,7 @@ def extract_connectivity_by_condition(
     n_jobs: int = -1,
     random_state: int = 42,
     alpha: float = 0.05,
+    trial_ids: np.ndarray | None = None,
 ) -> dict:
   """Run the two-tier artifact-quality pipeline once (shared channel-drop
   decision across all conditions for this subject), then compute:
@@ -588,6 +663,12 @@ def extract_connectivity_by_condition(
     3. the difference matrices (stimulus - matched baseline) -- the
        cleanest view of what stimulation actually adds;
     4. optional permutation significance testing for each difference matrix.
+
+  `trial_ids` (optional): one trial id per row of `windows`, aligned with
+  the INPUT order BEFORE quality gating (build it with `build_trial_ids`,
+  using a per-label dict because 201 trials are 2 windows long and
+  stimulus trials 5). When given, permutation tests run at the trial
+  level; it is filtered here with the same `valid_mask` as the windows.
   """
   qc = apply_artifact_quality_pipeline(
       windows,
@@ -601,6 +682,11 @@ def extract_connectivity_by_condition(
       verbose=verbose,
   )
   windows_clean, y_clean = qc["windows_clean"], qc["y_clean"]
+  trial_ids_clean = None
+  if trial_ids is not None:
+    if len(trial_ids) != len(y):
+      raise ValueError("trial_ids must have one id per input window")
+    trial_ids_clean = np.asarray(trial_ids)[qc["valid_mask"] == 1]
 
   if windows_clean.shape[0] == 0:
     raise ValueError("All windows were rejected by the validation mask.")
@@ -633,6 +719,8 @@ def extract_connectivity_by_condition(
           permutation_tests[cond] = None
           continue
         band = (f0 - half_width, f0 + half_width)
+        stim_tids = trial_ids_clean[y_clean == cond] if trial_ids_clean is not None else None
+        base_tids = trial_ids_clean[y_clean == baseline_condition] if trial_ids_clean is not None else None
         permutation_tests[cond] = compute_permutation_test(
             stim_windows=stim_windows,
             baseline_windows=baseline_windows,
@@ -643,6 +731,8 @@ def extract_connectivity_by_condition(
             n_jobs=n_jobs,
             random_state=random_state,
             alpha=alpha,
+            stim_trial_ids=stim_tids,
+            baseline_trial_ids=base_tids,
         )
 
   return {
@@ -653,4 +743,7 @@ def extract_connectivity_by_condition(
       "channels_kept": qc["channels_kept"],
       "channels_kept_idx": qc["channels_kept_idx"],
       "channels_dropped": qc["channels_dropped"],
+      "windows_clean": windows_clean,
+      "y_clean": y_clean,
+      "trial_ids_clean": trial_ids_clean,
   }

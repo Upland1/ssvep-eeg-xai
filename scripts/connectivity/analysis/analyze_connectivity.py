@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from src.features.connectivity_extraction import (
+from src.features.connectivity.connectivity_extraction import (
     BASELINE_CONDITION,
     CONDITION_FREQS,
     compute_condition_coherence,
@@ -17,6 +17,7 @@ from src.features.connectivity_extraction import (
     compute_condition_wpli,
     extract_connectivity_by_condition,
 )
+from src.preprocessing.cv_utils import build_trial_ids
 from src.visualization.connectivity_plots import (
     CONDITION_LABELS,
     plot_all_conditions_panel,
@@ -25,6 +26,8 @@ from src.visualization.connectivity_plots import (
 )
 
 FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
+# 201 fixation segments are 2.0 s (2 sub-windows); stimulus trials are 5.0 s (5).
+SUB_WINDOWS_PER_TRIAL = {201: 2, 101: 5, 102: 5, 103: 5, 104: 5, 105: 5}
 
 METHODS = {
     "coherence": compute_condition_coherence,
@@ -78,7 +81,7 @@ def main():
   )
   args = parser.parse_args()
 
-  project_root = Path(__file__).resolve().parent.parent
+  project_root = Path(__file__).resolve().parents[2]
   data_dir = project_root / "data" / "processed" / args.subject
 
   # 1. Load data -- keep baseline (201) alongside the 5 stimulus conditions,
@@ -102,6 +105,7 @@ def main():
   #    permutation significance testing.
   channel_names = resolve_channel_names(windows.shape[1])
   method_fn = METHODS[args.method]
+  trial_ids = build_trial_ids(y_sel, sub_windows_per_trial=SUB_WINDOWS_PER_TRIAL)
   result = extract_connectivity_by_condition(
       windows,
       y_sel,
@@ -113,6 +117,7 @@ def main():
       n_jobs=args.n_jobs,
       random_state=args.seed,
       alpha=args.alpha,
+      trial_ids=trial_ids,
   )
 
   print("\n--- Condition-averaged connectivity summary ---")
@@ -148,7 +153,8 @@ def main():
   perm_tests = result.get("permutation_tests")
   if perm_tests:
     print(f"\n{'='*115}")
-    print(f"--- Permutation Significance Test ({args.permutations} iterations, alpha={args.alpha}) ---")
+    unit = next((p["permutation_unit"] for p in perm_tests.values() if p is not None), "?")
+    print(f"--- Permutation Significance Test ({args.permutations} iterations, alpha={args.alpha}, unit={unit}) ---")
     print(f"{'='*115}")
     header = (
         f"{'Condition':12s} | {'Stim':6s} | {'Rest':6s} | {'Obs Diff':9s} | {'95% Null CI':18s} | "
