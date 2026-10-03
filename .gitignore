@@ -14,14 +14,18 @@ data/raw/
 data/processed/*.npy
 data/processed/*/*.npz
 data/processed/*/*.npy
+data/processed/**/*.npy
 *.ebr
 
-# Model Checkpoints & Large Artifacts
-outputs/saved_models/*.pt
-outputs/saved_models/*.joblib
+# Model Checkpoints & Large Binaries
+outputs/models/
+outputs/saved_models/
+*.pt
+*.joblib
+
+# Generated Output Directories
 outputs/figures/
 outputs/reports/
-outputs/models/
 reports/
 
 # OS Specific
