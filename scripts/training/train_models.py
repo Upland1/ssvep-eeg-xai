@@ -241,7 +241,7 @@ def run_temporal_integration_evaluation(X, y, n_splits=5, window_size=2):
 
 
 def main():
-    base_dir = Path(__file__).resolve().parents[1]
+    base_dir = Path(__file__).resolve().parents[2]
     data_dir = base_dir / "data" / "processed"
 
     X_psd, X_time, y = load_dataset(data_dir)

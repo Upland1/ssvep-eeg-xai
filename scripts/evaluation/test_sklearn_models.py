@@ -5,10 +5,10 @@ import pandas as pd
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler
 
-from src.features.fbcca_extraction import extract_fbcca_features
-from src.features.fbcsp_extraction import extract_fbcsp_features
-from src.features.psd_extraction import extract_continuous_psd_features
-from src.models.sklearn_models import get_sklearn_model_suite
+from src.features.ssvep.fbcca_extraction import extract_fbcca_features
+from src.features.ssvep.fbcsp_extraction import extract_fbcsp_features
+from src.features.ssvep.psd_extraction import extract_continuous_psd_features
+from src.models.classical.sklearn_models import get_sklearn_model_suite
 
 FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
 
@@ -36,7 +36,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-project_root = Path(__file__).resolve().parents[1]
+project_root = Path(__file__).resolve().parents[2]
 data_dir = project_root / "data" / "processed"
 if args.subject:
   data_dir = data_dir / args.subject

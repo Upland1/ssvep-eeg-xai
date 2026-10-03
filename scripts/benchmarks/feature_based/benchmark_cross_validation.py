@@ -6,11 +6,11 @@ from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
 
-from src.features.psd_extraction import extract_continuous_psd_features
-from src.features.fbcca_extraction import extract_fbcca_features
-from src.features.fbcsp_extraction import MulticlassCSP, butter_bandpass_filter, DEFAULT_SUBBANDS
-from src.models.sklearn_models import get_sklearn_model_suite
-from src.preprocessing.cv_utils import build_trial_ids
+from src.features.ssvep.psd_extraction import extract_continuous_psd_features
+from src.features.ssvep.fbcca_extraction import extract_fbcca_features
+from src.features.ssvep.fbcsp_extraction import MulticlassCSP, butter_bandpass_filter, DEFAULT_SUBBANDS
+from src.models.classical.sklearn_models import get_sklearn_model_suite
+from src.preprocessing.dataset.cv_utils import build_trial_ids
 
 # Full recorded montage (8 channels). The "visual" cluster is named
 # explicitly here -- selecting by NAME rather than fixed position [3,4,5,6]
@@ -50,7 +50,7 @@ parser = argparse.ArgumentParser(description="Run 5-Fold Cross-Validation across
 parser.add_argument("--subject", help="Subject folder (e.g., S01). Defaults to root processed.")
 args = parser.parse_args()
 
-project_root = Path(__file__).resolve().parents[2]
+project_root = Path(__file__).resolve().parents[3]
 data_dir = project_root / "data" / "processed"
 if args.subject:
     data_dir = data_dir / args.subject

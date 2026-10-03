@@ -17,7 +17,7 @@ from src.features.connectivity.connectivity_extraction import (
     compute_condition_wpli,
     extract_connectivity_by_condition,
 )
-from src.preprocessing.cv_utils import build_trial_ids
+from src.preprocessing.dataset.cv_utils import build_trial_ids
 from src.visualization.connectivity_plots import (
     CONDITION_LABELS,
     plot_all_conditions_panel,
@@ -81,7 +81,7 @@ def main():
   )
   args = parser.parse_args()
 
-  project_root = Path(__file__).resolve().parents[2]
+  project_root = Path(__file__).resolve().parents[3]
   data_dir = project_root / "data" / "processed" / args.subject
 
   # 1. Load data -- keep baseline (201) alongside the 5 stimulus conditions,

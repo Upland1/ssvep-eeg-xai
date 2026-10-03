@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.signal import cheby1, filtfilt
 from sklearn.cross_decomposition import CCA
-from src.preprocessing.quality_check import apply_artifact_quality_pipeline
+from src.preprocessing.signal.quality_check import apply_artifact_quality_pipeline
 
 TARGET_FREQS = np.array([24.0, 20.0, 15.0, 10.9091, 8.5714])
 

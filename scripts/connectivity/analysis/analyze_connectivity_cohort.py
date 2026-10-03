@@ -19,7 +19,7 @@ from src.features.connectivity.connectivity_extraction import (
     compute_condition_wpli,
     extract_connectivity_by_condition,
 )
-from src.preprocessing.cv_utils import build_trial_ids
+from src.preprocessing.dataset.cv_utils import build_trial_ids
 from src.visualization.connectivity_plots import CONDITION_LABELS
 
 FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
@@ -163,7 +163,7 @@ def main():
                             "(default: <project>/reports/connectivity_edges).")
   args = parser.parse_args()
 
-  project_root = Path(__file__).resolve().parents[2]
+  project_root = Path(__file__).resolve().parents[3]
   data_root = project_root / "data" / "processed"
   edges_dir = Path(args.edges_dir) if args.edges_dir else project_root / "reports" / "connectivity_edges"
   subjects = discover_subjects(data_root)

@@ -38,7 +38,7 @@ from scripts.connectivity.comparison.compare_connectivity_frequencies import (
     select_responders,
 )
 from src.features.connectivity.connectivity_extraction import BASELINE_CONDITION, CONDITION_FREQS
-from src.preprocessing.quality_check import apply_artifact_quality_pipeline
+from src.preprocessing.signal.quality_check import apply_artifact_quality_pipeline
 
 FS = 250.0
 HALF_WIDTH = 1.0
@@ -219,7 +219,7 @@ def main():
   parser.add_argument("--benchmark-csv", default=None)
   args = parser.parse_args()
 
-  project_root = Path(__file__).resolve().parents[2]
+  project_root = Path(__file__).resolve().parents[3]
   data_root = project_root / "data" / "processed"
   rep_dir = project_root / "reports" / "connectivity_comparison"
   fig_dir = project_root / "outputs" / "figures" / "connectivity_comparison"

@@ -20,13 +20,13 @@ from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
 
-from src.features.fbcca_extraction import extract_fbcca_features
-from src.features.fbcsp_extraction import (
+from src.features.ssvep.fbcca_extraction import extract_fbcca_features
+from src.features.ssvep.fbcsp_extraction import (
     DEFAULT_SUBBANDS,
     MulticlassCSP,
     butter_bandpass_filter,
 )
-from src.preprocessing.cv_utils import build_trial_ids
+from src.preprocessing.dataset.cv_utils import build_trial_ids
 
 # Full recorded montage (8 channels, per the project's actual acquisition
 # setup). PO7 used to be hard-excluded upstream before any artifact-quality
@@ -197,7 +197,7 @@ def main():
   )
   args = parser.parse_args()
 
-  project_root = Path(__file__).resolve().parents[2]
+  project_root = Path(__file__).resolve().parents[3]
   data_root = project_root / "data" / "processed"
   subjects = discover_subjects(data_root)
 

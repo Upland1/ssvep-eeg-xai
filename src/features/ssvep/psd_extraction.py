@@ -2,7 +2,7 @@
 import numpy as np
 from scipy.signal import periodogram
 
-from src.preprocessing.quality_check import apply_artifact_quality_pipeline, validate_eeg_windows
+from src.preprocessing.signal.quality_check import apply_artifact_quality_pipeline, validate_eeg_windows
 
 
 def extract_continuous_psd_features(

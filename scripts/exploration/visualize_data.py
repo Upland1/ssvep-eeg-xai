@@ -3,10 +3,10 @@ import argparse
 import matplotlib.pyplot as plt
 import numpy as np
 
-from src.features.fbcca_extraction import extract_fbcca_features
-from src.features.fbcsp_extraction import extract_fbcsp_features
-from src.features.psd_extraction import extract_continuous_psd_features
-from src.preprocessing.quality_check import validate_eeg_windows
+from src.features.ssvep.fbcca_extraction import extract_fbcca_features
+from src.features.ssvep.fbcsp_extraction import extract_fbcsp_features
+from src.features.ssvep.psd_extraction import extract_continuous_psd_features
+from src.preprocessing.signal.quality_check import validate_eeg_windows
 
 parser = argparse.ArgumentParser(
     description="Verify and visualize PSD, FBCCA, and FBCSP extractions."
@@ -17,7 +17,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-project_root = Path(__file__).resolve().parents[1]
+project_root = Path(__file__).resolve().parents[2]
 data_dir = project_root / "data" / "processed"
 if args.subject:
   data_dir = data_dir / args.subject
@@ -48,13 +48,13 @@ print(f"Stimulus validation mask size: {len(mask_stim)}")
 print(f"Stimulus validation mask:      {mask_stim.tolist()}")
   
 # 4. Run all three extractors with artifact validation
-X_psd, y_clean_psd, mask_psd = extract_continuous_psd_features(
+X_psd, y_clean_psd, mask_psd, ch_report_psd = extract_continuous_psd_features(
     windows, y_stim, fs=250.0
 )
-X_fbcca, y_clean_fbcca, mask_fbcca = extract_fbcca_features(
+X_fbcca, y_clean_fbcca, mask_fbcca, ch_report_fbcca = extract_fbcca_features(
     windows, y_stim, fs=250.0
 )
-X_fbcsp, y_clean_fbcsp, mask_fbcsp = extract_fbcsp_features(
+X_fbcsp, y_clean_fbcsp, mask_fbcsp, ch_report_fbcsp = extract_fbcsp_features(
     windows, y_stim, fs=250.0
 )
 

@@ -10,8 +10,8 @@ from sklearn.metrics import accuracy_score, confusion_matrix, classification_rep
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
 
-from src.features.fbcca_extraction import extract_fbcca_features
-from src.preprocessing.cv_utils import build_trial_ids
+from src.features.ssvep.fbcca_extraction import extract_fbcca_features
+from src.preprocessing.dataset.cv_utils import build_trial_ids
 
 # Full recorded montage (8 channels). The "visual" cluster is named
 # explicitly here -- selecting by NAME rather than fixed position [3,4,5,6]
@@ -61,7 +61,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-project_root = Path(__file__).resolve().parents[2]
+project_root = Path(__file__).resolve().parents[3]
 data_dir = project_root / "data" / "processed"
 if args.subject:
   data_dir = data_dir / args.subject

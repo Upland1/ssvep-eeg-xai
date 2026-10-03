@@ -12,13 +12,13 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
-from scripts.train_models import (
+from scripts.training.train_models import (
     FBCCA_TARGET_FREQS,
     extract_all_fbcca_features,
     extract_harmonic_features,
     load_dataset,
 )
-from src.models.spatial_spectral_cnn import (
+from src.models.cnn.spatial_spectral_cnn import (
     DualBranchFusionCNN,
     prepare_spatial_spectral_tensors,
 )
@@ -148,7 +148,7 @@ def main():
     )
     args = parser.parse_args()
 
-    base_dir = Path(__file__).resolve().parents[1]
+    base_dir = Path(__file__).resolve().parents[2]
     processed_dir = base_dir / "data" / "processed"
     save_dir = base_dir / args.save_dir
 

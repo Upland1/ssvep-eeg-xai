@@ -368,7 +368,7 @@ def main():
   parser.add_argument("--fig-dir", default=None, help="Default: <project>/outputs/figures/connectivity_comparison")
   args = parser.parse_args()
 
-  project_root = Path(__file__).resolve().parents[2]
+  project_root = Path(__file__).resolve().parents[3]
   edges_dir = Path(args.edges_dir) if args.edges_dir else project_root / "reports" / "connectivity_edges"
   out_dir = Path(args.out_dir) if args.out_dir else project_root / "reports" / "connectivity_comparison"
   fig_dir = Path(args.fig_dir) if args.fig_dir else project_root / "outputs" / "figures" / "connectivity_comparison"

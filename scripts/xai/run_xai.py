@@ -9,12 +9,12 @@ from sklearn.preprocessing import StandardScaler
 
 
 def main():
-    base_dir = Path(__file__).resolve().parents[1]
+    base_dir = Path(__file__).resolve().parents[2]
     data_dir = base_dir / "data" / "processed"
     fig_dir = base_dir / "outputs" / "figures" / "xai_heatmaps"
     fig_dir.mkdir(parents=True, exist_ok=True)
 
-    from scripts.train_models import (
+    from scripts.training.train_models import (
         TARGET_FREQS,
         extract_all_fbcca_features,
         extract_harmonic_features,

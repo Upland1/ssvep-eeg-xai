@@ -68,47 +68,75 @@ Regression, Ridge, SGD)                         (EEGNet, Compact-CNN,
 ```
 src/
   io/
-    ebr_parser.py             # Binary .ebr file loader/parser
+    ebr_parser.py                   # Binary .ebr file loader/parser
   preprocessing/
-    filters.py                 # Zero-phase Butterworth IIR bandpass
-    quality_check.py           # Two-tier artifact-quality pipeline
-    cv_utils.py                 # build_trial_ids() for trial-grouped CV
-    augmentation.py             # Training-only on-the-fly augmentation
+    signal/
+      filters.py                    # Zero-phase Butterworth IIR bandpass
+      quality_check.py              # Two-tier artifact-quality pipeline
+    dataset/
+      cv_utils.py                   # build_trial_ids() for trial-grouped CV
+      augmentation.py               # Training-only on-the-fly augmentation
   features/
-    fbcsp_extraction.py         # Filter-Bank CSP (one-vs-rest, 5 sub-bands)
-    fbcca_extraction.py         # Filter-Bank CCA (harmonic reference signals)
-    psd_extraction.py           # Continuous PSD + condition/baseline windowing
-    feature_selection.py        # ANOVA / mutual-information feature ranking
+    ssvep/
+      fbcsp_extraction.py           # Filter-Bank CSP (one-vs-rest, 5 sub-bands)
+      fbcca_extraction.py           # Filter-Bank CCA (harmonic reference signals)
+      psd_extraction.py             # Continuous PSD + condition/baseline windowing
+    selection/
+      feature_selection.py          # ANOVA / mutual-information feature ranking
+    connectivity/
+      connectivity_extraction.py    # Coherence/wPLI per-window + per-condition averaging
+      connectivity_graph_features.py
+      graph_inputs.py
   models/
-    sklearn_models.py           # Classical ML model suite (sklearn)
-    eegnet.py                   # EEGNet (Lawhern et al., 2018), PyTorch
-    compact_cnn.py               # Compact-CNN (Waytowich et al., 2018), PyTorch
-    shallow_conv_net.py          # ShallowConvNet (Schirrmeister et al., 2017), PyTorch
+    classical/
+      sklearn_models.py             # Classical ML model suite (sklearn)
+    cnn/
+      eegnet.py                     # EEGNet (Lawhern et al., 2018), PyTorch
+      compact_cnn.py                # Compact-CNN (Waytowich et al., 2018), PyTorch
+      shallow_conv_net.py           # ShallowConvNet (Schirrmeister et al., 2017), PyTorch
+      spatial_spectral_cnn.py       # Spatial-spectral + FBCCA fusion CNN
+    graph/
+      connectivity_gnn.py           # GNN over per-window channel graphs
   visualization/
-    signal_plots.py              # PSD-by-condition plotting
+    signal_plots.py                 # PSD-by-condition plotting
+    connectivity_plots.py           # MNE-style circular connectivity diagrams
 
 scripts/
-  run_preprocessing.py           # Raw .ebr -> filtered, QC'd, PSD feature matrix
-  diagnose_occipital_spectra.py  # Per-class occipital FFT spectrum diagnostic
-  visualize_data.py              # Cross-check PSD / FBCCA / FBCSP extraction
-  evaluate_confusion_matrix.py   # 5-fold CV confusion matrix (FBCSP+FBCCA hybrid)
-  test_sklearn_models.py         # In-sample fit test across the classical suite
-
-benchmarks/
-  benchmark_cross_validation.py    # Single/hybrid feature-space CV comparison
-  benchmark_feature_selection.py   # ANOVA / mutual-info / subband-pruning comparison
-  benchmark_n_subjects.py          # Flagship FBCSP+FBCCA -> Shrinkage-LDA, all subjects
-  benchmark_harmonic_fbcca.py      # Occipital harmonic PSD + FBCCA hybrid
-  benchmark_eegnet.py              # EEGNet raw-window benchmark (+ --augment flag)
-  benchmark_compact_cnn.py         # Compact-CNN raw-window benchmark
-  benchmark_shallow_convnet.py     # ShallowConvNet raw-window benchmark
-  benchmark_nn_augmentation.py     # Augmentation ON/OFF, all NN architectures, all subjects
-
-connectivity/
-  connectivity_extraction.py     # Coherence per-window + per-condition averaging
-  connectivity_plots.py           # MNE-style circular connectivity diagrams
-  analyze_connectivity.py         # Per-subject connectivity driver script
+  preprocessing/
+    run_preprocessing.py            # Raw .ebr -> filtered, QC'd, PSD feature matrix
+  exploration/
+    diagnose_occipital_spectra.py   # Per-class occipital FFT spectrum diagnostic
+    visualize_data.py               # Cross-check PSD / FBCCA / FBCSP extraction
+  training/
+    train_models.py                 # Harmonic PSD + FBCCA model training
+    train_final_model.py            # Train and save production models
+    batch_run_subjects.py           # Multi-subject pipeline benchmark from raw .ebr
+  evaluation/
+    evaluate_confusion_matrix.py    # 5-fold CV confusion matrix (FBCSP+FBCCA hybrid)
+    test_sklearn_models.py          # In-sample fit test across the classical suite
+  xai/
+    run_xai.py                      # Feature-importance heatmaps
+    compare_subject_xai.py          # Cross-subject XAI comparison
+  benchmarks/
+    feature_based/
+      benchmark_cross_validation.py   # Single/hybrid feature-space CV comparison
+      benchmark_feature_selection.py  # ANOVA / mutual-info / subband-pruning comparison
+      benchmark_n_subjects.py         # Flagship FBCSP+FBCCA -> Shrinkage-LDA, all subjects
+      benchmark_harmonic_fbcca.py     # Occipital harmonic PSD + FBCCA hybrid
+    neural_networks/
+      benchmark_eegnet.py             # EEGNet raw-window benchmark (+ --augment flag)
+      benchmark_compact_cnn.py        # Compact-CNN raw-window benchmark
+      benchmark_shallow_convnet.py    # ShallowConvNet raw-window benchmark
+      benchmark_nn_augmentation.py    # Augmentation ON/OFF, all NN architectures, all subjects
+  connectivity/
+    analysis/                       # Per-subject and cohort connectivity
+    comparison/                     # Cross-frequency comparison and tests
+    diagnostics/                    # Power / alpha confound checks
+    graph_modeling/                 # Graph dataset, connectivity gate, GNN benchmark
 ```
+
+All scripts are run as modules from the project root (`python -m scripts.<folder>.<name>`)
+so that the `src` and `scripts` packages resolve.
 
 ## Pipeline components
 
@@ -229,22 +257,22 @@ Hilbert-transform narrowband filtering), autoregressive connectivity
 
 ```bash
 # Preprocess one subject's raw .ebr recording into a PSD feature matrix
-python scripts/run_preprocessing.py
+python -m scripts.preprocessing.run_preprocessing
 
 # Classical ML: fit and inspect accuracy across the full sklearn model suite
-python scripts/test_sklearn_models.py --subject S03
+python -m scripts.evaluation.test_sklearn_models --subject S03
 
 # Flagship hybrid benchmark (all discovered subjects, trial-grouped CV)
-python benchmarks/benchmark_n_subjects.py --n-jobs -1
+python -m scripts.benchmarks.feature_based.benchmark_n_subjects --n-jobs -1
 
 # Single-subject EEGNet benchmark on GPU if available, with optional augmentation A/B
-python benchmarks/benchmark_eegnet.py --subject S03 --epochs 150 --augment
+python -m scripts.benchmarks.neural_networks.benchmark_eegnet --subject S03 --epochs 150 --augment
 
 # Augmentation ON vs OFF across all subjects, for a given architecture
-python benchmarks/benchmark_nn_augmentation.py --model compact_cnn
+python -m scripts.benchmarks.neural_networks.benchmark_nn_augmentation --model compact_cnn
 
 # Functional connectivity (coherence) for one subject
-python connectivity/analyze_connectivity.py --subject S03 --method coherence
+python -m scripts.connectivity.analysis.analyze_connectivity --subject S03 --method coherence
 ```
 
 Subject folders are auto-discovered under `data/processed/` (pattern

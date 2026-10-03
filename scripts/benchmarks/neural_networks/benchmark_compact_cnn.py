@@ -16,9 +16,9 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedGroupKFold
 
-from src.preprocessing.quality_check import apply_artifact_quality_pipeline
-from src.preprocessing.cv_utils import build_trial_ids
-from src.models.compact_cnn import CompactCNN
+from src.preprocessing.signal.quality_check import apply_artifact_quality_pipeline
+from src.preprocessing.dataset.cv_utils import build_trial_ids
+from src.models.cnn.compact_cnn import CompactCNN
 
 SCALP_CHANNELS = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
 LOWEST_TARGET_FREQ_HZ = 8.5714  # this project's slowest SSVEP target

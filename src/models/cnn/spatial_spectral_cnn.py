@@ -15,7 +15,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
-from scripts.train_models import (
+from scripts.training.train_models import (
     FBCCA_TARGET_FREQS,
     extract_all_fbcca_features,
     load_dataset,
@@ -210,7 +210,7 @@ def evaluate_temporal_smoothing(y_true: np.ndarray, oof_probs: np.ndarray, windo
 
 
 if __name__ == "__main__":
-    base_dir = Path(__file__).resolve().parents[2]
+    base_dir = Path(__file__).resolve().parents[3]
     processed_dir = base_dir / "data" / "processed"
 
     X_psd, X_time, y = load_dataset(processed_dir)

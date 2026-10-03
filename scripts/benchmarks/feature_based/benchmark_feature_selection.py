@@ -8,14 +8,14 @@ from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
 
-from src.features.fbcca_extraction import extract_fbcca_features
-from src.features.fbcsp_extraction import (
+from src.features.ssvep.fbcca_extraction import extract_fbcca_features
+from src.features.ssvep.fbcsp_extraction import (
     DEFAULT_SUBBANDS,
     MulticlassCSP,
     butter_bandpass_filter,
 )
-from src.features.feature_selection import select_k_best_fbcsp_features
-from src.preprocessing.cv_utils import build_trial_ids
+from src.features.selection.feature_selection import select_k_best_fbcsp_features
+from src.preprocessing.dataset.cv_utils import build_trial_ids
 
 FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
 
@@ -51,7 +51,7 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-project_root = Path(__file__).resolve().parents[2]
+project_root = Path(__file__).resolve().parents[3]
 data_dir = project_root / "data" / "processed" / args.subject
 
 # 1. Load data

@@ -63,7 +63,7 @@ def plot_comparative_xai(model_dir: Path, output_fig: Path):
 
 
 if __name__ == "__main__":
-    base_dir = Path(__file__).resolve().parents[1]
+    base_dir = Path(__file__).resolve().parents[2]
     plot_comparative_xai(
         model_dir=base_dir / "outputs" / "models",
         output_fig=base_dir / "outputs" / "figures" / "xai_heatmaps" / "xai_s01_vs_s04_comparison.png",
