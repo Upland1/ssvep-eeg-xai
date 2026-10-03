@@ -3,21 +3,21 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from src.features.psd_extraction import (
+from src.features.ssvep.psd_extraction import (
     prepare_feature_matrix,
     process_condition_windows_with_baseline,
 )
 from src.io.ebr_parser import load_ebr_file
-from src.preprocessing.filters import apply_iir_bandpass
+from src.preprocessing.signal.filters import apply_iir_bandpass
 from src.visualization.signal_plots import plot_average_psd_by_condition
-from src.preprocessing.quality_check import identify_noisy_channels, summarize_window_quality
+from src.preprocessing.signal.quality_check import identify_noisy_channels, summarize_window_quality
 
 def main():
-    config_path = Path(__file__).resolve().parents[1] / "configs" / "pipeline_config.yaml"
+    config_path = Path(__file__).resolve().parents[2] / "configs" / "pipeline_config.yaml"
     with open(config_path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    base_dir = Path(__file__).resolve().parents[1]
+    base_dir = Path(__file__).resolve().parents[2]
     file_path = base_dir / config["paths"]["data_raw_dir"] / "S03" / "OO.ebr"
 
     recording = load_ebr_file(file_path)

@@ -7,24 +7,24 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from scripts.train_models import (
+from scripts.training.train_models import (
     FBCCA_TARGET_FREQS,
     extract_all_fbcca_features,
     extract_harmonic_features,
     run_evaluation,
     run_temporal_integration_evaluation,
 )
-from src.features.psd_extraction import (
+from src.features.ssvep.psd_extraction import (
     prepare_feature_matrix,
     process_condition_windows_with_baseline,
 )
 from src.io.ebr_parser import load_ebr_file
-from src.models.spatial_spectral_cnn import (
+from src.models.cnn.spatial_spectral_cnn import (
     evaluate_temporal_smoothing,
     prepare_spatial_spectral_tensors,
     train_and_eval_fusion_cnn_cv,
 )
-from src.preprocessing.filters import apply_iir_bandpass
+from src.preprocessing.signal.filters import apply_iir_bandpass
 
 
 def preprocess_subject_if_needed(
@@ -167,7 +167,7 @@ def main():
     )
     args = parser.parse_args()
 
-    base_dir = Path(__file__).resolve().parents[1]
+    base_dir = Path(__file__).resolve().parents[2]
     config_path = base_dir / "configs" / "pipeline_config.yaml"
     with open(config_path, "r", encoding="utf-8") as file:
         config = yaml.safe_load(file)

@@ -22,7 +22,7 @@ from scripts.connectivity.comparison.compare_connectivity_frequencies import sel
 from scripts.connectivity.graph_modeling.benchmark_connectivity_gate import score
 from scripts.connectivity.graph_modeling.build_graph_dataset import load_or_build
 from src.features.connectivity.graph_inputs import build_inputs, standardize_fold
-from src.models.connectivity_gnn import ConnectivityGNN
+from src.models.graph.connectivity_gnn import ConnectivityGNN
 
 DEFAULT_VARIANTS = ["nodes", "nodes+F", "nodes+coh+F", "nodes+phase+F", "nodes+coh+phase+F"]
 

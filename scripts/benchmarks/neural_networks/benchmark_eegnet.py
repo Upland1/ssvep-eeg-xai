@@ -11,10 +11,10 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedGroupKFold
 
-from src.preprocessing.quality_check import apply_artifact_quality_pipeline
-from src.preprocessing.cv_utils import build_trial_ids
-from src.models.eegnet import EEGNetSSVEP
-from src.preprocessing.augmentation import SSVEPAugmentedDataset
+from src.preprocessing.signal.quality_check import apply_artifact_quality_pipeline
+from src.preprocessing.dataset.cv_utils import build_trial_ids
+from src.models.cnn.eegnet import EEGNetSSVEP
+from src.preprocessing.dataset.augmentation import SSVEPAugmentedDataset
 
 # Full recorded montage (8 channels, per the project's actual acquisition
 # setup). PO7 used to be hard-excluded upstream before any artifact-quality

@@ -39,7 +39,7 @@ from src.features.connectivity.connectivity_extraction import (
     benjamini_hochberg,
     extract_connectivity_by_condition,
 )
-from src.preprocessing.cv_utils import build_trial_ids
+from src.preprocessing.dataset.cv_utils import build_trial_ids
 
 FS = 250.0
 HALF_WIDTH = 1.0
@@ -269,7 +269,7 @@ def main():
   parser.add_argument("--seed", type=int, default=42)
   args = parser.parse_args()
 
-  project_root = Path(__file__).resolve().parents[2]  # scripts/connectivity/<file> -> project root
+  project_root = Path(__file__).resolve().parents[3]  # scripts/connectivity/<group>/<file> -> project root
   data_root = project_root / "data" / "processed"
   out_dir = project_root / "reports" / "connectivity_comparison"
   out_dir.mkdir(parents=True, exist_ok=True)

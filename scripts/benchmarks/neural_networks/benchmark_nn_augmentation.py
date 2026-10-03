@@ -21,12 +21,12 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedGroupKFold
 
-from src.preprocessing.quality_check import apply_artifact_quality_pipeline
-from src.models.eegnet import EEGNetSSVEP
-from src.models.compact_cnn import CompactCNN
-from src.models.shallow_conv_net import ShallowConvNet
-from src.preprocessing.augmentation import SSVEPAugmentedDataset
-from src.preprocessing.cv_utils import build_trial_ids
+from src.preprocessing.signal.quality_check import apply_artifact_quality_pipeline
+from src.models.cnn.eegnet import EEGNetSSVEP
+from src.models.cnn.compact_cnn import CompactCNN
+from src.models.cnn.shallow_conv_net import ShallowConvNet
+from src.preprocessing.dataset.augmentation import SSVEPAugmentedDataset
+from src.preprocessing.dataset.cv_utils import build_trial_ids
 
 FULL_MONTAGE = ["PO7", "PO3", "POz", "PO4", "PO8", "O1", "Oz", "O2"]
 SUBJECT_DIR_PATTERN = re.compile(r"^S\d+$")

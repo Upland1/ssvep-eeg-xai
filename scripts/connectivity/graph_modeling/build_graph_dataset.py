@@ -16,8 +16,8 @@ import numpy as np
 
 from scripts.connectivity.analysis.analyze_connectivity_cohort import discover_subjects, resolve_channel_names
 from src.features.connectivity.connectivity_graph_features import TARGET_FREQS, build_graph_features
-from src.features.fbcca_extraction import extract_fbcca_features
-from src.preprocessing.cv_utils import build_trial_ids
+from src.features.ssvep.fbcca_extraction import extract_fbcca_features
+from src.preprocessing.dataset.cv_utils import build_trial_ids
 
 CLASSES = [101, 102, 103, 104, 105]
 FREQ_LABEL = ["24 Hz", "20 Hz", "15 Hz", "10.91 Hz", "8.57 Hz"]

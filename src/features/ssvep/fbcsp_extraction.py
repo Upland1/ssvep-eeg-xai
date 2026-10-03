@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.linalg import eigh
 from scipy.signal import butter, filtfilt
-from src.preprocessing.quality_check import apply_artifact_quality_pipeline
+from src.preprocessing.signal.quality_check import apply_artifact_quality_pipeline
 
 DEFAULT_SUBBANDS = [
     (7.0, 12.0),

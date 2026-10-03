@@ -5,7 +5,7 @@ Functional connectivity feature extraction for SSVEP EEG windows.
 import numpy as np
 from joblib import Parallel, delayed
 from scipy.signal import coherence, csd, welch
-from src.preprocessing.quality_check import apply_artifact_quality_pipeline
+from src.preprocessing.signal.quality_check import apply_artifact_quality_pipeline
 
 # SSVEP fundamental frequency per stimulus condition code (matches
 # fbcca_extraction.TARGET_FREQS, keyed by condition instead of by index).
