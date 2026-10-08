@@ -86,13 +86,16 @@ def extract_fbcsp_features(
     std_limits: tuple[float, float] = (1.0, 35.0),
     channel_fail_fraction_thresh: float = 0.5,
     verbose: bool = False,
+    subband_windows: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-  """Validate windows (channel-level + window-level) and extract FBCSP features.
+  """Apply quality checks and extract FBCSP features.
 
-  Same two-tier artifact-quality pipeline as `extract_fbcca_features`: bad
-  channels are dropped for this subject first, then remaining
-  noisy windows are rejected on the surviving channels. CSP is
-  fit per sub-band on the clean, channel-reduced data.
+  Bad channels are dropped first, followed by noisy windows. CSP is then fit
+  per sub-band on the remaining data. For cross-validation, fit CSP inside
+  each fold to avoid data leakage.
+
+  ``subband_windows`` may provide aligned, pre-filtered bands; otherwise each
+  window is filtered separately.
   """
   qc = apply_artifact_quality_pipeline(
       windows,
@@ -110,9 +113,21 @@ def extract_fbcsp_features(
   if clean_windows.shape[0] == 0:
     raise ValueError("All windows were rejected by the validation mask.")
 
+  if subband_windows is not None:
+    if subband_windows.shape[0] != windows.shape[0]:
+      raise ValueError(
+          f"subband_windows {subband_windows.shape} is not aligned with windows {windows.shape}"
+      )
+    clean_bands = subband_windows[qc["valid_mask"] == 1][:, :, qc["channels_kept_idx"], :]
+    band_list = [clean_bands[:, k] for k in range(clean_bands.shape[1])]
+  else:
+    band_list = [
+        butter_bandpass_filter(clean_windows, lowcut, highcut, fs=fs, order=4)
+        for lowcut, highcut in subbands
+    ]
+
   subband_features = []
-  for lowcut, highcut in subbands:
-    X_sb = butter_bandpass_filter(clean_windows, lowcut, highcut, fs=fs, order=4)
+  for X_sb in band_list:
     csp = MulticlassCSP(n_components=n_components)
     csp.fit(X_sb, y_clean)
     subband_features.append(csp.transform(X_sb))

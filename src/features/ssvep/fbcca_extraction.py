@@ -41,14 +41,13 @@ def extract_fbcca_features(
     std_limits: tuple[float, float] = (1.0, 35.0),
     channel_fail_fraction_thresh: float = 0.5,
     verbose: bool = False,
+    subband_windows: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-  """Validate windows (channel-level + window-level) and extract FBCCA scores.
+  """Apply quality checks and extract FBCCA scores from clean windows.
 
-  Runs the two-tier artifact-quality pipeline first: chronically bad
-  channels are identified and dropped for this subject, then
-  individual windows still out of range on the surviving channels are
-  rejected. FBCCA correlation scores are computed only on the
-  clean, channel-reduced data.
+  The quality gate drops bad channels first, then rejects noisy windows.
+  ``subband_windows`` may provide pre-filtered bands aligned with ``windows``;
+  otherwise each clean window is filtered separately.
   """
   qc = apply_artifact_quality_pipeline(
       windows,
@@ -68,8 +67,18 @@ def extract_fbcca_features(
 
   n_windows, n_channels, n_samples = clean_windows.shape
   n_targets = len(target_freqs)
-  subband_filters = get_chebyshev_subbands(fs)
-  n_subbands = len(subband_filters)
+
+  if subband_windows is not None:
+    if subband_windows.shape[0] != windows.shape[0] or subband_windows.shape[-1] != windows.shape[-1]:
+      raise ValueError(
+          f"subband_windows {subband_windows.shape} is not aligned with windows {windows.shape}"
+      )
+    clean_bands = subband_windows[qc["valid_mask"] == 1][:, :, qc["channels_kept_idx"], :]
+    n_subbands = clean_bands.shape[1]
+    subband_filters = None
+  else:
+    subband_filters = get_chebyshev_subbands(fs)
+    n_subbands = len(subband_filters)
   weights = np.array([n**-1.25 + 0.25 for n in range(1, n_subbands + 1)])
 
   reference_signals = []
@@ -83,13 +92,18 @@ def extract_fbcca_features(
   X_fbcca = np.zeros((n_windows, n_targets))
 
   for w in range(n_windows):
-    win = clean_windows[w]
+    if subband_filters is None:
+      win_bands = clean_bands[w]
+    else:
+      win_bands = np.stack(
+          [filtfilt(b, a, clean_windows[w], axis=-1) for b, a in subband_filters]
+      )
     scores = np.zeros(n_targets)
 
     for i, ref in enumerate(reference_signals):
       r_sub = np.zeros(n_subbands)
-      for sb_idx, (b, a) in enumerate(subband_filters):
-        win_sb = filtfilt(b, a, win, axis=-1)
+      for sb_idx in range(n_subbands):
+        win_sb = win_bands[sb_idx]
         try:
           cca.fit(win_sb.T, ref.T)
           x_score, y_score = cca.transform(win_sb.T, ref.T)
