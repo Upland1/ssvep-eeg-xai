@@ -22,6 +22,7 @@ outputs/models/
 outputs/saved_models/
 *.pt
 *.joblib
+baselines/
 
 # Generated Output Directories
 outputs/figures/
