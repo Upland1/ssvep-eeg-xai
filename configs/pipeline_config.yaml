@@ -18,7 +18,7 @@ paths:
   saved_models_dir: "outputs/saved_models"
 
 channels:
-  # Keep all recorded channels; quality checks decide what to drop per subject.
+  # Keep all recorded channels; quality checks decide what to drop.
   scalp:
     - "PO7"
     - "PO3"
@@ -36,7 +36,9 @@ channels:
 
 preprocessing:
   lowcut_hz: 1.0
-  highcut_hz: 60.0
+  highcut_hz: 90.0     # Keep harmonics up to 72 Hz
+  notch_hz: 60.0       # Remove mains noise
+  notch_q: 30.0
   filter_order: 4
   sub_window_sec: 1.0
   vpp_thresh_uv: 200.0
@@ -48,13 +50,26 @@ preprocessing:
     pre_stim_cross_sec: 2.0
     cue_lookback_sec: 1.0
 
+# Shared subject-level quality decision.
 quality:
   vpp_range_uv: [5.0, 120.0]      # Vpp limits
   std_range_uv: [1.0, 35.0]
-  channel_fail_fraction: 0.5      # drop channels failing in > 50% of windows
-  artifact_block_sec: 0.25        # artifact scan block size
-  guard_sec: auto                 # use the slowest filter's ringing time
-  guard_rel_amplitude: 0.01       # ringing cutoff as a fraction of peak
+  channel_fail_fraction: 0.5      # Drop channels failing in > 50% of windows
+  artifact_block_sec: 0.25        # Artifact scan block size
+  guard_sec: auto                 # Use the slowest filter's ringing time
+  guard_rel_amplitude: 0.01       # Ringing cutoff
+
+# Optional narrow filter-bank bands.
+filter_bank:
+  harmonics:
+    enabled: true
+    n_harmonics: 3          # Harmonics 1-3
+    half_width_hz: 1.0
+    order: 2
+  intermediate:
+    enabled: true           # Between-frequency bands
+    half_width_hz: 1.0
+    order: 2
 
 features:
   psd_range_hz: [5.0, 35.0]
