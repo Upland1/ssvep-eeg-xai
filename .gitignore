@@ -10,6 +10,7 @@ env/
 venv/
 
 # Raw EEG Data & Large Binaries
+data/*
 data/raw/
 data/processed/*.npy
 data/processed/*/*.npz
