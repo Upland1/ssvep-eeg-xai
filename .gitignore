@@ -10,6 +10,7 @@ env/
 venv/
 
 # Raw EEG Data & Large Binaries
+data/*
 data/raw/
 data/processed/*.npy
 data/processed/*/*.npz
@@ -22,6 +23,7 @@ outputs/models/
 outputs/saved_models/
 *.pt
 *.joblib
+baselines/
 
 # Generated Output Directories
 outputs/figures/

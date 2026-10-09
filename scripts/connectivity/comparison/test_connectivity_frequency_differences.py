@@ -1,19 +1,10 @@
-"""Between-frequency SSVEP connectivity tests with a split-half reliability ceiling.
+"""Compare connectivity between frequencies with split-half reliability.
 
-H0: trial windows from A and B are exchangeable. Trials are shuffled as whole
-units; matched baselines stay fixed.
-
-Reliability: each delta matrix is split into random halves, edge profiles are
-correlated, and Spearman-Brown correction gives full-length reliability. The
-observed similarity is compared against sqrt(rel_A * rel_B).
-
-Limits: approximate trial IDs give only rough p-values; effects mix SNR and
-true network differences.
 """
 
 import argparse
 import itertools
-import warnings
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -21,36 +12,42 @@ import pandas as pd
 from joblib import Parallel, delayed
 from scipy.stats import chi2
 
-from scripts.connectivity.analysis.analyze_connectivity_cohort import (
+
+def _find_root(start: Path) -> Path:
+  for cand in [start, *start.parents]:
+    if (cand / "configs" / "pipeline_config.yaml").exists():
+      return cand
+  return start.parents[3]
+
+
+PROJECT_ROOT = _find_root(Path(__file__).resolve())
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.connectivity.analysis.analyze_connectivity_cohort import (  # noqa: E402
     METHODS,
     SUB_WINDOWS_PER_TRIAL,
     discover_subjects,
-    resolve_channel_names,
+    output_suffix,
 )
-from scripts.connectivity.comparison.compare_connectivity_frequencies import (
+from scripts.connectivity.comparison.compare_connectivity_frequencies import (  # noqa: E402
     CONDITIONS,
     FREQ_LABEL,
     select_responders,
 )
-from src.features.connectivity.connectivity_extraction import (
+from src.features.connectivity.connectivity_extraction import (  # noqa: E402
     BASELINE_CONDITION,
     CONDITION_FREQS,
     _trial_permutation_split,
     benjamini_hochberg,
     extract_connectivity_by_condition,
 )
-from src.preprocessing.dataset.cv_utils import build_trial_ids
+from src.io.subject_data import QUALITY_MODES, load_subject  # noqa: E402
 
-FS = 250.0
 HALF_WIDTH = 1.0
 
 
-# ---------------------------------------------------------------------------
-# Small helpers
-# ---------------------------------------------------------------------------
-
 def trial_alignment_issues(y: np.ndarray, per_trial: dict[int, int]) -> list[str]:
-  """Describe same-label blocks that are not divisible by their trial length."""
+  """Find legacy label blocks with incomplete trials."""
   issues, i, n = [], 0, len(y)
   while i < n:
     j = i
@@ -93,53 +90,44 @@ def fisher_combine(p_values: list[float]) -> float:
   return float(chi2.sf(-2.0 * np.sum(np.log(p)), 2 * p.size))
 
 
-# ---------------------------------------------------------------------------
-# Split-half reliability of one delta matrix
-# ---------------------------------------------------------------------------
-
 def _split_trials(rng: np.random.RandomState, tids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-  """Random trial-level halves (alternate assignment of shuffled trials)."""
+  """Split shuffled trials into two halves."""
   trials = rng.permutation(np.unique(tids))
   h1 = np.isin(tids, trials[0::2])
   return np.flatnonzero(h1), np.flatnonzero(~h1)
 
 
-def _split_half_once(seed, stim, stim_tids, base, base_tids, band, method_fn) -> float:
+def _split_half_once(seed, stim, stim_tids, base, base_tids, band, method_fn, fs) -> float:
   rng = np.random.RandomState(seed)
   s1, s2 = _split_trials(rng, stim_tids)
   b1, b2 = _split_trials(rng, base_tids)
-  d1 = method_fn(stim[s1], fs=FS, freq_band=band) - method_fn(base[b1], fs=FS, freq_band=band)
-  d2 = method_fn(stim[s2], fs=FS, freq_band=band) - method_fn(base[b2], fs=FS, freq_band=band)
+  d1 = method_fn(stim[s1], fs=fs, freq_band=band) - method_fn(base[b1], fs=fs, freq_band=band)
+  d2 = method_fn(stim[s2], fs=fs, freq_band=band) - method_fn(base[b2], fs=fs, freq_band=band)
   return _pearson(_offdiag(d1), _offdiag(d2))
 
 
-def split_half_reliability(stim, stim_tids, base, base_tids, band, method_fn, n_splits, seed, n_jobs) -> float:
+def split_half_reliability(stim, stim_tids, base, base_tids, band, method_fn, n_splits, seed, n_jobs, fs) -> float:
   seeds = np.random.RandomState(seed).randint(0, 2**31 - 1, size=n_splits)
   rs = Parallel(n_jobs=n_jobs)(
-      delayed(_split_half_once)(int(s), stim, stim_tids, base, base_tids, band, method_fn) for s in seeds
+      delayed(_split_half_once)(int(s), stim, stim_tids, base, base_tids, band, method_fn, fs) for s in seeds
   )
   rs = np.array([r for r in rs if np.isfinite(r)])
   if rs.size == 0:
     return float("nan")
   r_mean = float(np.tanh(np.mean(np.arctanh(np.clip(rs, -0.999, 0.999)))))
-  return 2.0 * r_mean / (1.0 + r_mean)  # Spearman-Brown to full length
+  return 2.0 * r_mean / (1.0 + r_mean)
 
-
-# ---------------------------------------------------------------------------
-# Pairwise permutation test
-# ---------------------------------------------------------------------------
-
-def _pair_perm_worker(seed, pooled, pooled_tids, n_a, band_a, band_b, base_a, base_b, method_fn):
+def _pair_perm_worker(seed, pooled, pooled_tids, n_a, band_a, band_b, base_a, base_b, method_fn, fs):
   rng = np.random.RandomState(seed)
   ia, ib = _trial_permutation_split(rng, pooled_tids, n_a)
-  da = method_fn(pooled[ia], fs=FS, freq_band=band_a) - base_a
-  db = method_fn(pooled[ib], fs=FS, freq_band=band_b) - base_b
+  da = method_fn(pooled[ia], fs=fs, freq_band=band_a) - base_a
+  db = method_fn(pooled[ib], fs=fs, freq_band=band_b) - base_b
   return da, db
 
 
 def pairwise_permutation_test(
     stim_a, tid_a, stim_b, tid_b, cond_a, cond_b, delta_a, delta_b, base_a, base_b,
-    method_fn, n_perm, seed, n_jobs, alpha=0.05,
+    method_fn, n_perm, seed, n_jobs, fs, alpha=0.05,
 ) -> dict:
   if np.intersect1d(tid_a, tid_b).size:
     raise ValueError("trial ids of the two conditions overlap")
@@ -148,7 +136,7 @@ def pairwise_permutation_test(
   seeds = np.random.RandomState(seed).randint(0, 2**31 - 1, size=n_perm)
   out = Parallel(n_jobs=n_jobs)(
       delayed(_pair_perm_worker)(
-          int(s), pooled, pooled_tids, len(stim_a), _band(cond_a), _band(cond_b), base_a, base_b, method_fn
+          int(s), pooled, pooled_tids, len(stim_a), _band(cond_a), _band(cond_b), base_a, base_b, method_fn, fs
       ) for s in seeds
   )
   null_a = np.array([o[0] for o in out])
@@ -165,7 +153,7 @@ def pairwise_permutation_test(
       float((1 + np.sum(valid_d >= d_obs)) / (len(valid_d) + 1)) if np.isfinite(d_obs) and len(valid_d) else float("nan")
   )
 
-  # Edge-level: which pairs differ? (two-sided, centred on each edge's null mean)
+  # Test each edge separately.
   n = delta_a.shape[0]
   triu = np.triu_indices(n, k=1)
   obs_edge = (delta_a - delta_b)[triu]
@@ -181,34 +169,28 @@ def pairwise_permutation_test(
   }
 
 
-# ---------------------------------------------------------------------------
-# Per-subject / per-method driver
-# ---------------------------------------------------------------------------
-
-def run_subject_method(sub, data_root, method_name, n_perm, n_splits, seed, n_jobs, skip_reliability):
+def run_subject_method(sub, data_root, method_name, n_perm, n_splits, seed, n_jobs, skip_reliability,
+                       quality_mode="shared"):
   sub_dir = data_root / sub
   if not (sub_dir / "X_time_windows.npy").exists():
     print(f"[-] Skipping {sub}: X_time_windows.npy not found.")
     return [], []
-  windows_raw = np.load(sub_dir / "X_time_windows.npy")
-  y_raw = np.load(sub_dir / "y_labels.npy")
   conds = [BASELINE_CONDITION] + CONDITIONS
-  mask = np.isin(y_raw, conds)
-  y_sel = y_raw[mask]
-  windows = windows_raw[mask] if windows_raw.shape[0] == len(y_raw) else windows_raw[: len(y_sel)]
-  channel_names = resolve_channel_names(windows.shape[1])
+  d = load_subject(sub_dir, conds, quality_mode=quality_mode)
+  windows, y_sel, fs = d["windows"], d["y"], d["fs"]
 
-  issues = trial_alignment_issues(y_sel, SUB_WINDOWS_PER_TRIAL)
-  approx = bool(issues)
-  if approx:
-    print(f"  [!] {sub}: trial ids approximate ({'; '.join(issues)}) -- p-values for this subject are indicative only.")
-  trial_ids = build_trial_ids(y_sel, sub_windows_per_trial=SUB_WINDOWS_PER_TRIAL)
+  approx = False
+  if not d["built"]:
+    issues = trial_alignment_issues(y_sel, SUB_WINDOWS_PER_TRIAL)
+    approx = bool(issues)
+    if approx:
+      print(f"  [!] {sub}: trial ids approximate ({'; '.join(issues)}) -- p-values for this subject are indicative only.")
 
   method_fn = METHODS[method_name]
-  # n_permutations=0 -> only QC + observed matrices; we reuse its cleaned arrays.
+  # Compute QC and observed matrices once.
   res = extract_connectivity_by_condition(
-      windows, y_sel, fs=FS, method_fn=method_fn, channel_names=channel_names,
-      verbose=False, n_permutations=0, trial_ids=trial_ids,
+      windows, y_sel, fs=fs, method_fn=method_fn, channel_names=d["channel_names"],
+      verbose=False, n_permutations=0, trial_ids=d["trial_ids"], quality=d["quality"],
   )
   if res["diffs"] is None:
     print(f"[-] Skipping {sub} ({method_name}): no baseline windows after QC.")
@@ -224,7 +206,7 @@ def run_subject_method(sub, data_root, method_name, n_perm, n_splits, seed, n_jo
       rel[c] = float("nan")
       continue
     rel[c] = split_half_reliability(
-        W[yc == c], tc[yc == c], base, base_t, _band(c), method_fn, n_splits, seed + c, n_jobs
+        W[yc == c], tc[yc == c], base, base_t, _band(c), method_fn, n_splits, seed + c, n_jobs, fs
     )
     rel_rows.append({"subject": sub, "method": method_name, "condition": c, "frequency": FREQ_LABEL[c],
                      "split_half_reliability": rel[c]})
@@ -236,13 +218,14 @@ def run_subject_method(sub, data_root, method_name, n_perm, n_splits, seed, n_jo
         W[yc == ca], tc[yc == ca], W[yc == cb], tc[yc == cb], ca, cb,
         res["diffs"][ca], res["diffs"][cb],
         res["baseline_matched"][ca]["matrix"], res["baseline_matched"][cb]["matrix"],
-        method_fn, n_perm, seed + 1000 * ca + cb, n_jobs,
+        method_fn, n_perm, seed + 1000 * ca + cb, n_jobs, fs,
     )
     ceiling = float(np.sqrt(rel[ca] * rel[cb])) if rel[ca] > 0 and rel[cb] > 0 else float("nan")
     r_dis = float(np.clip(r["r_obs"] / ceiling, -1, 1)) if np.isfinite(ceiling) and ceiling > 0.1 else float("nan")
     pair_rows.append({
         "subject": sub, "method": method_name, "freq_a": FREQ_LABEL[ca], "freq_b": FREQ_LABEL[cb],
         **r, "reliability_ceiling": ceiling, "r_disattenuated": r_dis, "trial_ids_approximate": approx,
+        "fs": fs,
     })
     print(f"    {FREQ_LABEL[ca]:>8s} vs {FREQ_LABEL[cb]:<8s} | mag {r['t_mag']:+.3f} p={r['p_mag']:.3f} | "
           f"pattern r={r['r_obs']:+.2f} p={r['p_pat']:.3f} | edges FDR {r['n_edges_fdr']}/{r['n_edges']} | ceiling {ceiling:.2f}")
@@ -256,29 +239,35 @@ def run_subject_method(sub, data_root, method_name, n_perm, n_splits, seed, n_jo
 
 def main():
   parser = argparse.ArgumentParser(description="Formal between-frequency connectivity tests + reliability ceiling.")
+  parser.add_argument("--data-root", type=Path, default=PROJECT_ROOT / "data" / "processed",
+                      help="Folder with one S<digits> sub-folder per subject (default: data/processed)")
+  parser.add_argument("--quality", choices=QUALITY_MODES, default="shared")
   parser.add_argument("--methods", nargs="+", default=["coherence", "wpli"], choices=list(METHODS))
   parser.add_argument("--subjects", nargs="+", default=None, help="Default: all discovered subjects.")
   parser.add_argument("--permutations", type=int, default=500,
-                       help="Permutations per frequency pair (default 500; use >=1000 for final numbers).")
+                      help="Permutations per frequency pair (default 500; use >=1000 for final numbers).")
   parser.add_argument("--splits", type=int, default=10, help="Random split-half repetitions per frequency (default 10).")
   parser.add_argument("--skip-reliability", action="store_true")
   parser.add_argument("--responders", nargs="+", default=None)
   parser.add_argument("--responder-threshold", type=float, default=80.0)
-  parser.add_argument("--benchmark-csv", default=None)
+  parser.add_argument("--benchmark-csv", default=None,
+                      help="Default: reports/n_subjects_benchmark[_<data-root>].csv")
   parser.add_argument("--n-jobs", type=int, default=-1)
   parser.add_argument("--seed", type=int, default=42)
   args = parser.parse_args()
 
-  project_root = Path(__file__).resolve().parents[3]  # scripts/connectivity/<group>/<file> -> project root
-  data_root = project_root / "data" / "processed"
-  out_dir = project_root / "reports" / "connectivity_comparison"
+  data_root = args.data_root if args.data_root.is_absolute() else PROJECT_ROOT / args.data_root
+  suffix = output_suffix(data_root)
+  out_dir = PROJECT_ROOT / "reports" / f"connectivity_comparison{suffix}"
   out_dir.mkdir(parents=True, exist_ok=True)
-  bench_csv = Path(args.benchmark_csv) if args.benchmark_csv else project_root / "reports" / "n_subjects_benchmark.csv"
+  bench_csv = (Path(args.benchmark_csv) if args.benchmark_csv
+               else PROJECT_ROOT / "reports" / f"n_subjects_benchmark{suffix}.csv")
 
   subjects = args.subjects or discover_subjects(data_root)
   responders, how = select_responders(subjects, args.responders, bench_csv, args.responder_threshold)
   print("=" * 90)
   print(f"BETWEEN-FREQUENCY TESTS  methods={args.methods}  subjects={subjects}  perms={args.permutations}")
+  print(f"data: {data_root} | quality: {args.quality}")
   print(f"Responders ({how}): {responders or 'none'}")
   print("=" * 90)
 
@@ -287,7 +276,7 @@ def main():
     for sub in subjects:
       print(f"\n[{sub}] {method}")
       pr, rr = run_subject_method(sub, data_root, method, args.permutations, args.splits,
-                                  args.seed, args.n_jobs, args.skip_reliability)
+                                  args.seed, args.n_jobs, args.skip_reliability, args.quality)
       pair_all += pr
       rel_all += rr
     if not pair_all:

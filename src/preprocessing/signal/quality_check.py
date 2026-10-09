@@ -1,24 +1,4 @@
-"""Artifact validation utilities for EEG windows.
-
-Two-tier artifact quality pipeline
------------------------------------
-Tier 1 - Channel level:
-    Every channel is passed through unfiltered until this module runs (no
-    channel is dropped upstream during acquisition or segmentation). Here,
-    `identify_noisy_channels` looks across *all* windows of a subject's
-    recording and flags an electrode as chronically bad ("red channel") if
-    it fails the Vpp/std limits too often. `drop_noisy_channels` then
-    removes that electrode from the channel axis, for every window, so a
-    single dead/noisy electrode does not contaminate the whole montage.
-
-Tier 2 - Window level:
-    On the surviving channels only, `validate_eeg_windows` rejects
-    individual windows that still violate the same Vpp/std limits (e.g. a
-    good electrode picking up a one-off movement artifact).
-
-`apply_artifact_quality_pipeline` runs both tiers in the correct order and
-returns the cleaned data plus a report of what was dropped and why.
-"""
+"""Validate EEG windows with channel- and window-level quality checks."""
 
 import numpy as np
 
@@ -30,11 +10,7 @@ def summarize_window_quality(
     std_min: float = 1.0,
     std_max: float = 35.0,
 ) -> None:
-    """Print the actual Vpp/std distribution seen in `windows` next to the
-    active thresholds -- run this on a small raw sample when a quality gate
-    rejects everything, to see at a glance which bound is too strict for
-    your device's actual signal scale, instead of guessing.
-    """
+    """Print Vpp/std statistics alongside the active thresholds."""
     if windows.ndim != 3:
         raise ValueError("windows must have shape (n_windows, n_channels, n_samples)")
 
@@ -56,31 +32,7 @@ def validate_eeg_windows(
     std_min: float = 1.0,
     std_max: float = 35.0,
 ) -> np.ndarray:
-    """Return a binary mask for windows whose channels meet EEG limits.
-
-    A window is accepted (1) only if EVERY channel it contains falls within
-    [vpp_min, vpp_max] peak-to-peak and [std_min, std_max] standard
-    deviation. This is meant to run AFTER chronically bad channels have
-    already been removed via `identify_noisy_channels` / `drop_noisy_channels`
-    -- otherwise a single dead electrode would force every window in the
-    recording to be rejected, even if the other channels are clean.
-
-    Parameters
-    ----------
-    windows : np.ndarray, shape (n_windows, n_channels, n_samples)
-    vpp_min, vpp_max : float
-        Acceptable peak-to-peak voltage range (same units as `windows`,
-        typically microvolts). Default lower bound raised to 5.0 uV so
-        near-flat/disconnected channels are caught.
-    std_min, std_max : float
-        Acceptable standard-deviation range. Default lower bound raised to
-        1.0 for the same reason.
-
-    Returns
-    -------
-    np.ndarray of int, shape (n_windows,)
-        1 = window accepted, 0 = window rejected.
-    """
+    """Return a mask for windows where every channel meets the limits."""
     if windows.ndim != 3:
         raise ValueError("windows must have shape (n_windows, n_channels, n_samples)")
 
@@ -106,36 +58,17 @@ def compute_channel_quality_stats(
     std_min: float = 1.0,
     std_max: float = 35.0,
 ) -> dict:
-    """Compute, per channel, the fraction of windows that fail the quality limits.
-
-    Runs BEFORE any window is discarded: it looks at every channel across
-    every window to find electrodes that are bad most of the time (chronic
-    fault), as opposed to a channel that is only occasionally noisy (which
-    is handled later, per-window, by `validate_eeg_windows`).
-
-    Parameters
-    ----------
-    windows : np.ndarray, shape (n_windows, n_channels, n_samples)
-
-    Returns
-    -------
-    dict with:
-      "fail_fraction" : np.ndarray, shape (n_channels,)
-          Fraction of windows (0.0-1.0) in which that single channel falls
-          outside [vpp_min, vpp_max] or [std_min, std_max].
-      "mean_vpp" : np.ndarray, shape (n_channels,)
-      "mean_std" : np.ndarray, shape (n_channels,)
-    """
+    """Return per-channel failure rates and mean signal statistics."""
     if windows.ndim != 3:
         raise ValueError("windows must have shape (n_windows, n_channels, n_samples)")
 
-    vpp_per_channel = np.ptp(windows, axis=-1)   # (n_windows, n_channels)
-    std_per_channel = np.std(windows, axis=-1)   # (n_windows, n_channels)
+    vpp_per_channel = np.ptp(windows, axis=-1)
+    std_per_channel = np.std(windows, axis=-1)
 
     channel_ok = (
         (vpp_per_channel >= vpp_min) & (vpp_per_channel <= vpp_max)
         & (std_per_channel >= std_min) & (std_per_channel <= std_max)
-    )  # (n_windows, n_channels), True = this channel is fine in this window
+    )
 
     fail_fraction = 1.0 - channel_ok.mean(axis=0)
 
@@ -155,33 +88,7 @@ def identify_noisy_channels(
     std_max: float = 35.0,
     fail_fraction_thresh: float = 0.5,
 ) -> tuple[list[int], dict]:
-    """Flag electrodes that are bad often enough to drop entirely ("red channel").
-
-    A channel is flagged noisy/dead if it fails the Vpp/std limits in more
-    than `fail_fraction_thresh` of all windows (default: more than half the
-    recording). This is deliberately a subject-level, whole-channel
-    decision, so the channel count stays fixed across a subject's windows
-    -- FBCSP, FBCCA and EEGNet all assume a constant number of channels.
-
-    Parameters
-    ----------
-    windows : np.ndarray, shape (n_windows, n_channels, n_samples)
-    channel_names : list[str], optional
-        Channel labels aligned with the channel axis (e.g. ["PO3", "POz",
-        "PO4", "PO8", "O1", "Oz", "O2"]). If given, names are attached to
-        the returned stats for reporting.
-    fail_fraction_thresh : float
-        Fraction of windows a channel must fail before it is flagged.
-        0.5 means "bad in more than half the recording".
-
-    Returns
-    -------
-    noisy_idx : list[int]
-        Channel-axis indices flagged as chronically bad, sorted ascending.
-    stats : dict
-        Output of `compute_channel_quality_stats`, plus "channel_names" and
-        "noisy_channel_names" if `channel_names` was provided.
-    """
+    """Return channels that fail the limits too often."""
     stats = compute_channel_quality_stats(
         windows, vpp_min=vpp_min, vpp_max=vpp_max, std_min=std_min, std_max=std_max
     )
@@ -206,27 +113,7 @@ def drop_noisy_channels(
     noisy_idx: list[int],
     channel_names: list[str] | None = None,
 ) -> tuple[np.ndarray, list[str] | None, list[int]]:
-    """Remove flagged channels from the channel axis of `windows`.
-
-    Parameters
-    ----------
-    windows : np.ndarray, shape (n_windows, n_channels, n_samples)
-    noisy_idx : list[int]
-        Channel indices to remove (from `identify_noisy_channels`).
-    channel_names : list[str], optional
-        Channel labels aligned with `windows`' channel axis.
-
-    Returns
-    -------
-    windows_clean : np.ndarray, shape (n_windows, n_channels - len(noisy_idx), n_samples)
-    remaining_names : list[str] or None
-        Names of the channels that were kept, in their original order.
-    keep_idx : list[int]
-        Original channel-axis indices that were kept, in order. Callers
-        that already have a full-channel array elsewhere (e.g. the raw
-        `windows` before feature extraction) can reuse this to slice it
-        consistently: `windows[:, keep_idx, :]`.
-    """
+    """Remove flagged channels and return the remaining indices and names."""
     if windows.ndim != 3:
         raise ValueError("windows must have shape (n_windows, n_channels, n_samples)")
 
@@ -250,51 +137,31 @@ def apply_artifact_quality_pipeline(
     std_max: float = 35.0,
     channel_fail_fraction_thresh: float = 0.5,
     verbose: bool = True,
+    precomputed: dict | None = None,
 ) -> dict:
-    """Run the full two-tier artifact-quality pipeline for one subject.
+    """Apply channel- and window-level quality checks for one subject."""
+    if precomputed is not None:
+        valid_mask = np.asarray(precomputed["valid_mask"]).astype(int)
+        if len(valid_mask) != len(y) or len(valid_mask) != windows.shape[0]:
+            raise ValueError(
+                f"precomputed valid_mask has {len(valid_mask)} entries for {windows.shape[0]} windows"
+            )
+        kept_idx = list(precomputed["channels_kept_idx"])
+        windows_clean, y_clean = filter_dataset(windows[:, kept_idx, :], y, valid_mask)
+        if verbose:
+            print(f"[Shared QC] {len(kept_idx)}/{windows.shape[1]} channels kept | "
+                  f"{int(valid_mask.sum())}/{len(valid_mask)} windows accepted.")
+        return {
+            "windows_clean": windows_clean,
+            "y_clean": y_clean,
+            "valid_mask": valid_mask,
+            "channels_kept": precomputed.get("channels_kept"),
+            "channels_kept_idx": kept_idx,
+            "channels_dropped": precomputed.get("channels_dropped"),
+            "channel_stats": precomputed.get("channel_stats", {}),
+        }
 
-    Tier 1 (channel level): all channels enter this function unfiltered.
-    Electrodes that are chronically bad (flat/dead or overly noisy in more
-    than `channel_fail_fraction_thresh` of windows) are identified and
-    dropped for this subject's entire recording.
-
-    Tier 2 (window level): on the surviving channels only, individual
-    windows that still violate the Vpp/std limits are rejected. This is the
-    existing `validate_eeg_windows` behaviour, applied after bad channels
-    are removed so one dead electrode can no longer zero out every window.
-
-    Parameters
-    ----------
-    windows : np.ndarray, shape (n_windows, n_channels, n_samples)
-    y : np.ndarray, shape (n_windows,)
-        Labels aligned with `windows`.
-    channel_names : list[str], optional
-    vpp_min, vpp_max, std_min, std_max : float
-        Shared thresholds for both the channel-level and window-level
-        checks. Defaults: Vpp in [5, 120], std in [1, 35].
-    channel_fail_fraction_thresh : float
-        Threshold used only for the channel-level (Tier 1) decision.
-    verbose : bool
-        If True, print a short QC report.
-
-    Returns
-    -------
-    dict with:
-      "windows_clean"     : np.ndarray, shape (n_clean, n_channels_kept, n_samples)
-      "y_clean"           : np.ndarray, shape (n_clean,)
-      "valid_mask"        : np.ndarray, shape (n_windows,)
-          Window-level accept/reject mask, computed on the channel-reduced
-          array (i.e. aligned with `windows`/`y`, before window filtering).
-      "channels_kept"     : list[str] or None
-      "channels_kept_idx" : list[int]
-          Original channel-axis indices that were kept. Use this to slice
-          any other full-channel array (e.g. the raw windows) consistently.
-      "channels_dropped"  : list[str] or None
-      "channel_stats"     : dict (fail_fraction / mean_vpp / mean_std per
-                             original channel, from Tier 1)
-    """
-    # --- Tier 1: channel-level quality, computed on the FULL, unfiltered
-    # channel set (no channel has been dropped yet at this point). ---
+    # Remove persistently bad channels.
     noisy_idx, channel_stats = identify_noisy_channels(
         windows,
         channel_names=channel_names,
@@ -318,7 +185,7 @@ def apply_artifact_quality_pipeline(
             f"Dropped: {dropped_label if dropped_label else 'none'}"
         )
 
-    # --- Tier 2: window-level quality, on the surviving channels only. ---
+    # Remove invalid windows.
     valid_mask = validate_eeg_windows(
         windows_ch, vpp_min=vpp_min, vpp_max=vpp_max, std_min=std_min, std_max=std_max
     )
@@ -340,10 +207,7 @@ def apply_artifact_quality_pipeline(
     }
 
 
-# ---------------------------------------------------------------------------
-# Legacy helpers (unchanged) -- still used by the preprocessing pipeline for
-# per-trial baseline/cue sub-window extraction.
-# ---------------------------------------------------------------------------
+# Legacy helpers for per-trial sub-window extraction.
 
 def window_quality_flags(signal: np.ndarray, vpp_thresh: float = 200.0, std_range: tuple[float, float] = (0.5, 60.0)) -> tuple[np.ndarray, np.ndarray]:
     """Return per-channel Vp-p and std metrics and a binary noise mask."""

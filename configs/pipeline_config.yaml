@@ -2,29 +2,23 @@ project:
   name: "ssvep-eeg-xai"
   description: "SSVEP classification and Explainable AI pipeline on binary EBR EEG data"
   target_conditions:
-    - 201  # Fixation cross / Rest baseline
-    - 202  # Cue / Lookback window
-    - 101  # Stimulus target 1
-    - 102  # Stimulus target 2
-    - 103  # Stimulus target 3
-    - 104  # Stimulus target 4
-    - 105  # Stimulus target 5
- 
+    - 201  # Rest baseline
+    - 202  # Cue window
+    - 101  # Target 1
+    - 102  # Target 2
+    - 103  # Target 3
+    - 104  # Target 4
+    - 105  # Target 5
+
 paths:
   data_raw_dir: "data/raw"
   data_processed_dir: "data/processed"
   figures_dir: "outputs/figures"
   reports_dir: "outputs/reports"
   saved_models_dir: "outputs/saved_models"
- 
+
 channels:
-  # All 8 recorded scalp/occipital channels are kept here. No channel is
-  # excluded at this stage -- PO7 used to be hard-excluded before any
-  # artifact-quality check ever ran. Now every channel flows into
-  # X_time_windows.npy, and the two-tier quality pipeline
-  # (quality_check.apply_artifact_quality_pipeline) decides -- per
-  # subject, based on actual signal quality -- whether PO7 (or any other
-  # channel) gets dropped.
+  # Keep all recorded channels; quality checks decide what to drop per subject.
   scalp:
     - "PO7"
     - "PO3"
@@ -39,7 +33,7 @@ channels:
   auxiliary:
     - "TIMESTAMP"
     - "FLASHINGTIME"
- 
+
 preprocessing:
   lowcut_hz: 1.0
   highcut_hz: 60.0
@@ -53,11 +47,19 @@ preprocessing:
     stimulus_duration_sec: 5.0
     pre_stim_cross_sec: 2.0
     cue_lookback_sec: 1.0
- 
+
+quality:
+  vpp_range_uv: [5.0, 120.0]      # Vpp limits
+  std_range_uv: [1.0, 35.0]
+  channel_fail_fraction: 0.5      # drop channels failing in > 50% of windows
+  artifact_block_sec: 0.25        # artifact scan block size
+  guard_sec: auto                 # use the slowest filter's ringing time
+  guard_rel_amplitude: 0.01       # ringing cutoff as a fraction of peak
+
 features:
   psd_range_hz: [5.0, 35.0]
   plotting_range_hz: [1.0, 60.0]
- 
+
 training:
   cv_splits: 5
   random_state: 42
