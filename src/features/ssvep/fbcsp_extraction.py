@@ -87,15 +87,27 @@ def extract_fbcsp_features(
     channel_fail_fraction_thresh: float = 0.5,
     verbose: bool = False,
     subband_windows: np.ndarray | None = None,
+    quality: dict | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-  """Apply quality checks and extract FBCSP features.
+  """Validate windows (channel-level + window-level) and extract FBCSP features.
 
-  Bad channels are dropped first, followed by noisy windows. CSP is then fit
-  per sub-band on the remaining data. For cross-validation, fit CSP inside
-  each fold to avoid data leakage.
+  bad channels are dropped for this subject first, then remaining
+  noisy windows are rejected on the surviving channels. CSP is
+  fit per sub-band on the clean, channel-reduced data.
 
-  ``subband_windows`` may provide aligned, pre-filtered bands; otherwise each
-  window is filtered separately.
+  WARNING: this fits CSP on ALL windows passed in. For cross-validated
+  accuracy, fit CSP inside each fold instead (as benchmark_n_subjects.py
+  does); use this function only for visualisation / full-data fits.
+
+  subband_windows : optional, shape (n_windows, n_subbands, n_channels, n_samples)
+      Pre-filtered sub-band windows aligned with `windows` (one band per
+      entry of `subbands`). When given, no filtering is done here. When
+      None, each window is filtered on its own (legacy, with edge effects).
+
+  quality : optional, the subject's shared quality decision (from
+      `src.io.subject_data.load_subject(...)["quality"]`). When given, the
+      two-tier gate is NOT re-run here; that decision (window mask + kept
+      channels) is applied as-is, so every analysis uses the same windows.
   """
   qc = apply_artifact_quality_pipeline(
       windows,
@@ -107,6 +119,7 @@ def extract_fbcsp_features(
       std_max=std_limits[1],
       channel_fail_fraction_thresh=channel_fail_fraction_thresh,
       verbose=verbose,
+      precomputed=quality,
   )
   clean_windows, y_clean = qc["windows_clean"], qc["y_clean"]
 

@@ -24,6 +24,11 @@ BASELINE_BAND = (5.0, 35.0)
 # condition's fundamental frequency.
 STIMULUS_BAND_HALFWIDTH_HZ = 1.0
 
+# NOTE on fs: the functions below keep fs=250.0 as their default so old calls
+# behave as before, but the recordings are 256 Hz. Always pass the real fs
+# (`src.io.subject_data.load_subject(...)["fs"]`): with 250 every frequency
+# axis is scaled by 250/256, so a "24 +/- 1 Hz" band is really 23.4-25.4 Hz.
+
 
 # ---------------------------------------------------------------------------
 # Per-window connectivity matrix (diagnostic use only -- see warning below)
@@ -652,6 +657,7 @@ def extract_connectivity_by_condition(
     random_state: int = 42,
     alpha: float = 0.05,
     trial_ids: np.ndarray | None = None,
+    quality: dict | None = None,
 ) -> dict:
   """Run the two-tier artifact-quality pipeline once (shared channel-drop
   decision across all conditions for this subject), then compute:
@@ -667,8 +673,14 @@ def extract_connectivity_by_condition(
   `trial_ids` (optional): one trial id per row of `windows`, aligned with
   the INPUT order BEFORE quality gating (build it with `build_trial_ids`,
   using a per-label dict because 201 trials are 2 windows long and
-  stimulus trials 5). When given, permutation tests run at the trial
-  level; it is filtered here with the same `valid_mask` as the windows.
+  stimulus trials 5, or read the true ids from a built folder). When given,
+  permutation tests run at the trial level; it is filtered here with the
+  same `valid_mask` as the windows.
+
+  `quality` (optional): the subject's shared quality decision
+  (`src.io.subject_data.load_subject(...)["quality"]`). When given, the gate
+  is not re-run here, so connectivity uses exactly the same windows and
+  channels as the classifier.
   """
   qc = apply_artifact_quality_pipeline(
       windows,
@@ -680,6 +692,7 @@ def extract_connectivity_by_condition(
       std_max=std_limits[1],
       channel_fail_fraction_thresh=channel_fail_fraction_thresh,
       verbose=verbose,
+      precomputed=quality,
   )
   windows_clean, y_clean = qc["windows_clean"], qc["y_clean"]
   trial_ids_clean = None

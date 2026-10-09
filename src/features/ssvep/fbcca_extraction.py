@@ -42,12 +42,27 @@ def extract_fbcca_features(
     channel_fail_fraction_thresh: float = 0.5,
     verbose: bool = False,
     subband_windows: np.ndarray | None = None,
+    quality: dict | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-  """Apply quality checks and extract FBCCA scores from clean windows.
+  """Validate windows (channel-level + window-level) and extract FBCCA scores.
 
-  The quality gate drops bad channels first, then rejects noisy windows.
-  ``subband_windows`` may provide pre-filtered bands aligned with ``windows``;
-  otherwise each clean window is filtered separately.
+  chronically bad channels are identified and dropped for this subject, then
+  individual windows still out of range on the surviving channels are
+  rejected. FBCCA correlation scores are computed only on the
+  clean, channel-reduced data.
+
+  subband_windows : optional, shape (n_windows, n_subbands, n_channels, n_samples)
+      Sub-band windows aligned with `windows`, already filtered (see
+      `src.preprocessing.windowing.band_windows` / `scripts/build_windows.py`).
+      When given, NO filtering is done here -- the quality gate's window
+      mask and channel selection are applied to these arrays instead. This
+      is how continuously-filtered (edge-effect-free) bands are used. When
+      None, each window is filtered on its own with `filtfilt` (legacy).
+
+  quality : optional, the subject's shared quality decision (from
+      `src.io.subject_data.load_subject(...)["quality"]`). When given, the
+      two-tier gate is NOT re-run here; that decision (window mask + kept
+      channels) is applied as-is, so every analysis uses the same windows.
   """
   qc = apply_artifact_quality_pipeline(
       windows,
@@ -59,6 +74,7 @@ def extract_fbcca_features(
       std_max=std_limits[1],
       channel_fail_fraction_thresh=channel_fail_fraction_thresh,
       verbose=verbose,
+      precomputed=quality,
   )
   clean_windows, y_clean = qc["windows_clean"], qc["y_clean"]
 
