@@ -1,6 +1,4 @@
-"""Compare connectivity between frequencies with split-half reliability.
-
-"""
+"""Compare connectivity between frequencies with split-half reliability."""
 
 import argparse
 import itertools
@@ -42,12 +40,19 @@ from src.features.connectivity.connectivity_extraction import (  # noqa: E402
     extract_connectivity_by_condition,
 )
 from src.io.subject_data import QUALITY_MODES, load_subject  # noqa: E402
+from src.stats.nbs import nbs_sweep  # noqa: E402
+
+NBS_THRESHOLD = 2.0  # primary pseudo-z threshold (two-tailed: |z| > 2)
 
 HALF_WIDTH = 1.0
 
 
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
 def trial_alignment_issues(y: np.ndarray, per_trial: dict[int, int]) -> list[str]:
-  """Find legacy label blocks with incomplete trials."""
+  """Describe same-label blocks that are not divisible by their trial length (legacy folders only)."""
   issues, i, n = [], 0, len(y)
   while i < n:
     j = i
@@ -90,8 +95,12 @@ def fisher_combine(p_values: list[float]) -> float:
   return float(chi2.sf(-2.0 * np.sum(np.log(p)), 2 * p.size))
 
 
+# ---------------------------------------------------------------------------
+# Split-half reliability of one delta matrix
+# ---------------------------------------------------------------------------
+
 def _split_trials(rng: np.random.RandomState, tids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-  """Split shuffled trials into two halves."""
+  """Random trial-level halves (alternate assignment of shuffled trials)."""
   trials = rng.permutation(np.unique(tids))
   h1 = np.isin(tids, trials[0::2])
   return np.flatnonzero(h1), np.flatnonzero(~h1)
@@ -115,7 +124,17 @@ def split_half_reliability(stim, stim_tids, base, base_tids, band, method_fn, n_
   if rs.size == 0:
     return float("nan")
   r_mean = float(np.tanh(np.mean(np.arctanh(np.clip(rs, -0.999, 0.999)))))
-  return 2.0 * r_mean / (1.0 + r_mean)
+  if r_mean <= 0:
+    # Spearman-Brown is only defined for r > 0 (for r < 0 it can go below -1,
+    # e.g. -1.03). A non-positive split-half r simply means "not reliable":
+    # report it uncorrected.
+    return r_mean
+  return 2.0 * r_mean / (1.0 + r_mean)  # Spearman-Brown to full length
+
+
+# ---------------------------------------------------------------------------
+# Pairwise permutation test
+# ---------------------------------------------------------------------------
 
 def _pair_perm_worker(seed, pooled, pooled_tids, n_a, band_a, band_b, base_a, base_b, method_fn, fs):
   rng = np.random.RandomState(seed)
@@ -153,7 +172,7 @@ def pairwise_permutation_test(
       float((1 + np.sum(valid_d >= d_obs)) / (len(valid_d) + 1)) if np.isfinite(d_obs) and len(valid_d) else float("nan")
   )
 
-  # Test each edge separately.
+  # Edge-level: which pairs differ? (two-sided, centred on each edge's null mean)
   n = delta_a.shape[0]
   triu = np.triu_indices(n, k=1)
   obs_edge = (delta_a - delta_b)[triu]
@@ -162,12 +181,21 @@ def pairwise_permutation_test(
   p_edge = (1 + np.sum(np.abs(null_edge - mu_e) >= np.abs(obs_edge - mu_e), axis=0)) / (n_perm + 1)
   fdr = benjamini_hochberg(p_edge, alpha=alpha)
 
+  # NBS on the same permutations: does A differ from B in a connected sub-network?
+  nbs = nbs_sweep(delta_a - delta_b, null_a - null_b, thresholds=(NBS_THRESHOLD,), alpha=alpha,
+                  two_tailed=True)[NBS_THRESHOLD]
+
   return {
       "t_mag": t_obs, "p_mag": p_mag, "d_pat": d_obs, "p_pat": p_pat,
       "r_obs": 1.0 - d_obs if np.isfinite(d_obs) else float("nan"),
       "n_edges_fdr": int(fdr.sum()), "n_edges": int(len(fdr)),
+      "nbs_max_size": nbs["max_size"], "nbs_p": nbs["p_max"], "n_edges_nbs": nbs["n_sig_edges"],
   }
 
+
+# ---------------------------------------------------------------------------
+# Per-subject / per-method driver
+# ---------------------------------------------------------------------------
 
 def run_subject_method(sub, data_root, method_name, n_perm, n_splits, seed, n_jobs, skip_reliability,
                        quality_mode="shared"):
@@ -187,7 +215,7 @@ def run_subject_method(sub, data_root, method_name, n_perm, n_splits, seed, n_jo
       print(f"  [!] {sub}: trial ids approximate ({'; '.join(issues)}) -- p-values for this subject are indicative only.")
 
   method_fn = METHODS[method_name]
-  # Compute QC and observed matrices once.
+  # n_permutations=0 -> only QC + observed matrices; we reuse its cleaned arrays.
   res = extract_connectivity_by_condition(
       windows, y_sel, fs=fs, method_fn=method_fn, channel_names=d["channel_names"],
       verbose=False, n_permutations=0, trial_ids=d["trial_ids"], quality=d["quality"],
@@ -228,13 +256,43 @@ def run_subject_method(sub, data_root, method_name, n_perm, n_splits, seed, n_jo
         "fs": fs,
     })
     print(f"    {FREQ_LABEL[ca]:>8s} vs {FREQ_LABEL[cb]:<8s} | mag {r['t_mag']:+.3f} p={r['p_mag']:.3f} | "
-          f"pattern r={r['r_obs']:+.2f} p={r['p_pat']:.3f} | edges FDR {r['n_edges_fdr']}/{r['n_edges']} | ceiling {ceiling:.2f}")
+          f"pattern r={r['r_obs']:+.2f} p={r['p_pat']:.3f} | edges FDR {r['n_edges_fdr']}/{r['n_edges']} | "
+          f"NBS component {r['nbs_max_size']} edges p={r['nbs_p']:.3f} | ceiling {ceiling:.2f}")
 
   df = pd.DataFrame(pair_rows)
   if len(df):
     df["sig_bh_mag"] = benjamini_hochberg(df["p_mag"].values)
     df["sig_bh_pat"] = benjamini_hochberg(df["p_pat"].fillna(1.0).values)
   return df.to_dict("records"), rel_rows
+
+
+def print_group_summary(method: str, df: pd.DataFrame, rel_df: pd.DataFrame | None, responders: list[str]) -> None:
+  print("\n" + "=" * 90)
+  print(f"[{method}] GROUP SUMMARY -- responders only: {responders}")
+  print("=" * 90)
+  if rel_df is not None and len(rel_df):
+    rel_df = rel_df[rel_df["subject"].isin(responders)]
+    piv = rel_df.pivot_table(index="subject", columns="frequency", values="split_half_reliability")
+    print("Split-half reliability of each delta matrix (Spearman-Brown; >~0.5 is usable):")
+    print(piv.reindex(columns=[FREQ_LABEL[c] for c in CONDITIONS]).round(2).to_string())
+  g = df[df["subject"].isin(responders)]
+  if g.empty:
+    print("No responder results.")
+    return
+  has_nbs = "nbs_p" in g.columns
+  print("\nPer frequency pair: subjects with p<0.05 / n, Fisher-combined p, mean disattenuated r"
+        + (", subjects with a significant NBS component" if has_nbs else ""))
+  print(f"{'pair':<20s} | {'MAGNITUDE':^26s} | {'PATTERN':^40s}" + (" | NBS" if has_nbs else ""))
+  for (fa, fb), grp in g.groupby(["freq_a", "freq_b"], sort=False):
+    k = len(grp)
+    mag = f"{int((grp.p_mag < .05).sum())}/{k}  comb p={fisher_combine(grp.p_mag.tolist()):.3f}"
+    pat = (f"{int((grp.p_pat < .05).sum())}/{k}  comb p={fisher_combine(grp.p_pat.tolist()):.3f}  "
+           f"r_dis={np.nanmean(grp.r_disattenuated) if grp.r_disattenuated.notna().any() else float('nan'):+.2f}")
+    nbs = f" | {int((grp.nbs_p < .05).sum())}/{k}" if has_nbs else ""
+    print(f"{fa:>8s} vs {fb:<8s} | {mag:^26s} | {pat:^40s}{nbs}")
+  if g["trial_ids_approximate"].any():
+    print("\n[!] Includes subjects with approximate trial ids:",
+          sorted(g.loc[g["trial_ids_approximate"], "subject"].unique()))
 
 
 def main():
@@ -252,6 +310,8 @@ def main():
   parser.add_argument("--responder-threshold", type=float, default=80.0)
   parser.add_argument("--benchmark-csv", default=None,
                       help="Default: reports/n_subjects_benchmark[_<data-root>].csv")
+  parser.add_argument("--summary-only", action="store_true",
+                      help="Do not recompute: re-print the group summary from the CSVs of a previous run.")
   parser.add_argument("--n-jobs", type=int, default=-1)
   parser.add_argument("--seed", type=int, default=42)
   args = parser.parse_args()
@@ -265,11 +325,24 @@ def main():
 
   subjects = args.subjects or discover_subjects(data_root)
   responders, how = select_responders(subjects, args.responders, bench_csv, args.responder_threshold)
+  if not responders:
+    how += " -> using ALL subjects; pass --responders (e.g. S03 S04 S05) to restrict"
+    responders = list(subjects)
   print("=" * 90)
   print(f"BETWEEN-FREQUENCY TESTS  methods={args.methods}  subjects={subjects}  perms={args.permutations}")
   print(f"data: {data_root} | quality: {args.quality}")
   print(f"Responders ({how}): {responders or 'none'}")
   print("=" * 90)
+
+  if args.summary_only:
+    for method in args.methods:
+      f = out_dir / f"{method}_pairwise_tests.csv"
+      if not f.exists():
+        print(f"[-] {f} not found; run without --summary-only first.")
+        continue
+      r = out_dir / f"{method}_split_half_reliability.csv"
+      print_group_summary(method, pd.read_csv(f), pd.read_csv(r) if r.exists() else None, responders)
+    return
 
   for method in args.methods:
     pair_all, rel_all = [], []
@@ -286,30 +359,7 @@ def main():
     if rel_all:
       pd.DataFrame(rel_all).to_csv(out_dir / f"{method}_split_half_reliability.csv", index=False)
 
-    print("\n" + "=" * 90)
-    print(f"[{method}] GROUP SUMMARY -- responders only (non-responders have no SSVEP to compare)")
-    print("=" * 90)
-    if rel_all:
-      rel_df = pd.DataFrame(rel_all)
-      rel_df = rel_df[rel_df["subject"].isin(responders)]
-      piv = rel_df.pivot_table(index="subject", columns="frequency", values="split_half_reliability")
-      print("Split-half reliability of each delta matrix (Spearman-Brown; >~0.5 is usable):")
-      print(piv.reindex(columns=[FREQ_LABEL[c] for c in CONDITIONS]).round(2).to_string())
-    g = df[df["subject"].isin(responders)]
-    if g.empty:
-      print("No responder results.")
-      continue
-    print("\nPer frequency pair: subjects with p<0.05 / n, Fisher-combined p, mean disattenuated r")
-    print(f"{'pair':<20s} | {'MAGNITUDE':^26s} | {'PATTERN':^40s}")
-    for (fa, fb), grp in g.groupby(["freq_a", "freq_b"], sort=False):
-      k = len(grp)
-      mag = f"{int((grp.p_mag < .05).sum())}/{k}  comb p={fisher_combine(grp.p_mag.tolist()):.3f}"
-      pat = (f"{int((grp.p_pat < .05).sum())}/{k}  comb p={fisher_combine(grp.p_pat.tolist()):.3f}  "
-             f"r_dis={np.nanmean(grp.r_disattenuated) if grp.r_disattenuated.notna().any() else float('nan'):+.2f}")
-      print(f"{fa:>8s} vs {fb:<8s} | {mag:^26s} | {pat:^40s}")
-    if g["trial_ids_approximate"].any():
-      print("\n[!] Includes subjects with approximate trial ids:",
-            sorted(g.loc[g["trial_ids_approximate"], "subject"].unique()))
+    print_group_summary(method, df, pd.DataFrame(rel_all) if rel_all else None, responders)
 
   print(f"\nCSVs saved under: {out_dir}")
 
