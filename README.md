@@ -195,6 +195,12 @@ StratifiedGroupKFold (grouped by trial) → 2-tap trial-aware smoothing
   `apply_artifact_quality_pipeline` runs both tiers and returns clean windows,
   labels and a per-channel report. All feature extractors and NN benchmarks
   share this exact gate.
+- **`src/preprocessing/window_quality.py`**: the per-subject decision saved by
+  `scripts/build_windows.py`. `quality.source` (or `--quality-source`) sets
+  which signal the Vpp/std limits are checked on: the filtered windows, the
+  raw windows cut at the same starts (`X_raw_windows.npy`), or `both`, where a
+  channel or window must pass on each. Windows that fail only on raw get
+  reject reason 3. The decision is applied to the filtered windows and bands.
 
 ### Trial-grouped cross-validation
 
