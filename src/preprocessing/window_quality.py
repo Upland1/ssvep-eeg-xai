@@ -9,7 +9,10 @@ from src.preprocessing.signal.quality_check import identify_noisy_channels, vali
 REASON_VALID = 0
 REASON_OWN_GATE = 1
 REASON_NEAR_ARTIFACT = 2
-REASON_NAMES = {0: "valid", 1: "failed own Vpp/std gate", 2: "within guard of an artifact"}
+REASON_RAW_GATE = 3
+REASON_NAMES = {0: "valid", 1: "failed own Vpp/std gate", 2: "within guard of an artifact",
+                3: "failed raw Vpp/std gate"}
+QUALITY_SOURCES = ("filtered", "raw", "both")
 
 DEFAULT_QUALITY = {
     "vpp_range_uv": [5.0, 120.0],
@@ -18,6 +21,7 @@ DEFAULT_QUALITY = {
     "artifact_block_sec": 0.25,
     "guard_sec": "auto",
     "guard_rel_amplitude": 0.01,
+    "source": "filtered",
 }
 
 
@@ -70,46 +74,71 @@ def subject_quality_gate(
     channel_names: list[str],
     filters: list[tuple[np.ndarray, np.ndarray]],
     params: dict | None = None,
+    raw_windows: np.ndarray | None = None,
+    raw: np.ndarray | None = None,
 ) -> dict:
-  """Return one quality decision for the subject's windows."""
+  """Return one quality decision for the subject's windows.
+
+  `params["source"]` picks the signal the limits are checked on: the filtered
+  windows, the raw windows cut at the same starts, or both (a window or channel
+  must pass on each). Raw checks need `raw_windows` and the continuous `raw`.
+  """
   p = {**DEFAULT_QUALITY, **(params or {})}
+  if p["source"] not in QUALITY_SOURCES:
+    raise ValueError(f"quality source must be one of {QUALITY_SOURCES}, got {p['source']!r}")
+  use_filtered = p["source"] in ("filtered", "both")
+  use_raw = p["source"] in ("raw", "both")
+  if use_raw and (raw_windows is None or raw is None):
+    raise ValueError(f"quality source {p['source']!r} needs raw_windows and the raw signal")
   vpp_min, vpp_max = p["vpp_range_uv"]
   std_min, std_max = p["std_range_uv"]
   n_samples = windows.shape[-1]
+  limits = dict(vpp_min=vpp_min, vpp_max=vpp_max, std_min=std_min, std_max=std_max)
+  checked = ([windows] if use_filtered else []) + ([raw_windows] if use_raw else [])
 
-  # Drop channels that fail too often.
-  noisy_idx, stats = identify_noisy_channels(
-      windows, channel_names=channel_names, vpp_min=vpp_min, vpp_max=vpp_max,
-      std_min=std_min, std_max=std_max, fail_fraction_thresh=p["channel_fail_fraction"],
-  )
-  kept_idx = [i for i in range(windows.shape[1]) if i not in set(noisy_idx)]
+  # Drop channels that fail too often on any checked signal.
+  noisy, fail_fraction = set(), np.zeros(windows.shape[1])
+  for w in checked:
+    idx, stats = identify_noisy_channels(w, channel_names=channel_names,
+                                         fail_fraction_thresh=p["channel_fail_fraction"], **limits)
+    noisy |= set(idx)
+    fail_fraction = np.maximum(fail_fraction, stats["fail_fraction"])
+  noisy_idx = sorted(noisy)
+  kept_idx = [i for i in range(windows.shape[1]) if i not in noisy]
   if not kept_idx:
     raise ValueError("All channels were flagged as noisy; nothing left to keep.")
 
   # Check each window on the kept channels.
-  own_ok = validate_eeg_windows(windows[:, kept_idx], vpp_min, vpp_max, std_min, std_max).astype(bool)
+  n_win = len(windows)
+  own_ok = (validate_eeg_windows(windows[:, kept_idx], **limits).astype(bool) if use_filtered
+            else np.ones(n_win, dtype=bool))
+  raw_ok = (validate_eeg_windows(raw_windows[:, kept_idx], **limits).astype(bool) if use_raw
+            else np.ones(n_win, dtype=bool))
 
   # Reject windows near artifacts in the continuous signal.
   if p["guard_sec"] in ("auto", None):
     guard_sec = filter_ringing_sec(filters, fs, p["guard_rel_amplitude"])
   else:
     guard_sec = float(p["guard_sec"])
-  artifact = artifact_sample_mask(broadband, fs, kept_idx, vpp_max, p["artifact_block_sec"])
+  artifact = np.zeros(broadband.shape[1], dtype=bool)
+  for signal in ([broadband] if use_filtered else []) + ([raw] if use_raw else []):
+    artifact |= artifact_sample_mask(signal, fs, kept_idx, vpp_max, p["artifact_block_sec"])
   widened = dilate(artifact, int(round(guard_sec * fs)))
   near = np.array([widened[s:s + n_samples].any() for s in starts], dtype=bool)
 
   reason = np.full(len(starts), REASON_VALID, dtype=np.int8)
-  reason[own_ok & near] = REASON_NEAR_ARTIFACT
+  reason[own_ok & raw_ok & near] = REASON_NEAR_ARTIFACT
+  reason[~raw_ok] = REASON_RAW_GATE
   reason[~own_ok] = REASON_OWN_GATE
 
   return {
       "valid_mask": (reason == REASON_VALID).astype(np.int8),
-      "valid_mask_no_guard": own_ok.astype(np.int8),
+      "valid_mask_no_guard": (own_ok & raw_ok).astype(np.int8),
       "reason": reason,
       "channels_kept_idx": kept_idx,
       "channels_kept": [channel_names[i] for i in kept_idx],
       "channels_dropped": [channel_names[i] for i in noisy_idx],
-      "channel_fail_fraction": {channel_names[i]: round(float(f), 3) for i, f in enumerate(stats["fail_fraction"])},
+      "channel_fail_fraction": {channel_names[i]: round(float(f), 3) for i, f in enumerate(fail_fraction)},
       "guard_sec": round(guard_sec, 3),
       "artifact_fraction": round(float(artifact.mean()), 4),
       "params": p,

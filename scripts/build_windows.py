@@ -2,6 +2,8 @@
 
 Filtering is continuous by default, and each subject gets one saved quality
 decision. Use `per_window` to reproduce the legacy filtering mode.
+The quality decision is checked on the filtered windows, on the raw windows
+cut at the same starts, or on both (`quality.source` / `--quality-source`).
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.preprocessing.signal.filters import apply_iir_bandpass  # noqa: E402
-from src.preprocessing.window_quality import REASON_NAMES, subject_quality_gate  # noqa: E402
+from src.preprocessing.window_quality import QUALITY_SOURCES, REASON_NAMES, subject_quality_gate  # noqa: E402
 from src.preprocessing.windowing import (  # noqa: E402
     FILTER_MODES,
     STIM_CONDITIONS,
@@ -61,7 +63,7 @@ def build_filter_banks(fs: float, cfg: dict, highcut: float, notch_hz: float | N
 
 
 def build_subject(raw_dir: Path, out_dir: Path, session: str, mode: str, cfg: dict,
-                  guard_override: float | None = None) -> dict:
+                  guard_override: float | None = None, source_override: str | None = None) -> dict:
   pre = cfg["preprocessing"]
   highcut = float(pre["highcut_hz"])
   notch_hz = pre.get("notch_hz") or None
@@ -87,6 +89,7 @@ def build_subject(raw_dir: Path, out_dir: Path, session: str, mode: str, cfg: di
       cue_lookback_sec=base["cue_lookback_sec"],
   )
   X = cut_windows(broadband, idx.starts, n_samples)
+  X_raw = cut_windows(sess["eeg"], idx.starts, n_samples)
 
   banks, skipped_bands = build_filter_banks(fs, cfg, highcut, notch_hz)
 
@@ -100,10 +103,14 @@ def build_subject(raw_dir: Path, out_dir: Path, session: str, mode: str, cfg: di
   q_params = dict(cfg.get("quality") or {})
   if guard_override is not None:
     q_params["guard_sec"] = guard_override
-  quality = subject_quality_gate(X, idx.starts, broadband, fs, sess["channels"], continuous_filters, q_params)
+  if source_override is not None:
+    q_params["source"] = source_override
+  quality = subject_quality_gate(X, idx.starts, broadband, fs, sess["channels"], continuous_filters, q_params,
+                                 raw_windows=X_raw, raw=sess["eeg"])
 
   out_dir.mkdir(parents=True, exist_ok=True)
   np.save(out_dir / "X_time_windows.npy", X)
+  np.save(out_dir / "X_raw_windows.npy", X_raw)
   np.save(out_dir / "y_labels.npy", idx.labels)
   np.save(out_dir / "trial_ids.npy", idx.trial_ids)
   np.save(out_dir / "window_starts.npy", idx.starts)
@@ -116,7 +123,7 @@ def build_subject(raw_dir: Path, out_dir: Path, session: str, mode: str, cfg: di
 
   labels, counts = np.unique(idx.labels, return_counts=True)
   reject_by_label = {
-      str(int(c)): {REASON_NAMES[r]: int(np.sum((idx.labels == c) & (quality["reason"] == r))) for r in (1, 2)}
+      str(int(c)): {REASON_NAMES[r]: int(np.sum((idx.labels == c) & (quality["reason"] == r))) for r in (1, 2, 3)}
       for c in labels
   }
   meta = {
@@ -140,6 +147,7 @@ def build_subject(raw_dir: Path, out_dir: Path, session: str, mode: str, cfg: di
           "channels_kept_idx": quality["channels_kept_idx"],
           "channels_dropped": quality["channels_dropped"],
           "channel_fail_fraction": quality["channel_fail_fraction"],
+          "source": quality["params"]["source"],
           "guard_sec": quality["guard_sec"],
           "artifact_fraction_of_recording": quality["artifact_fraction"],
           "n_valid": int(quality["valid_mask"].sum()),
@@ -162,6 +170,8 @@ def main():
                   help="Default: data/processed_<filter-mode>")
   ap.add_argument("--guard-sec", type=float, default=None,
                   help="Override the guard margin in seconds (default: config, 'auto' = filter ringing time)")
+  ap.add_argument("--quality-source", choices=QUALITY_SOURCES, default=None,
+                  help="Signal the quality limits are checked on (default: config quality.source)")
   ap.add_argument("--config", type=Path, default=ROOT / "configs" / "pipeline_config.yaml")
   args = ap.parse_args()
 
@@ -172,11 +182,13 @@ def main():
 
   pre = cfg["preprocessing"]
   print(f"Building windows | mode={args.filter_mode} | session={args.session} | out={out_root}")
-  print(f"Broadband {pre['lowcut_hz']}-{pre['highcut_hz']} Hz | notch: {pre.get('notch_hz') or 'none'}")
+  print(f"Broadband {pre['lowcut_hz']}-{pre['highcut_hz']} Hz | notch: {pre.get('notch_hz') or 'none'} | "
+        f"quality source: {args.quality_source or (cfg.get('quality') or {}).get('source', 'filtered')}")
   shown = False
   for sub in subjects:
     try:
-      meta = build_subject(raw_root / sub, out_root / sub, args.session, args.filter_mode, cfg, args.guard_sec)
+      meta = build_subject(raw_root / sub, out_root / sub, args.session, args.filter_mode, cfg, args.guard_sec,
+                           args.quality_source)
     except (FileNotFoundError, ValueError) as exc:
       print(f"  [-] {sub}: skipped ({exc})")
       continue
@@ -192,9 +204,10 @@ def main():
     stim = [str(c) for c in STIM_CONDITIONS]
     own = sum(q["rejected_by_label"][c][REASON_NAMES[1]] for c in stim if c in q["rejected_by_label"])
     near = sum(q["rejected_by_label"][c][REASON_NAMES[2]] for c in stim if c in q["rejected_by_label"])
+    raw = sum(q["rejected_by_label"][c][REASON_NAMES[3]] for c in stim if c in q["rejected_by_label"])
     print(f"  [+] {sub}: fs={meta['fs']:g} Hz | trials={meta['n_trials']} | "
           f"channels kept {len(q['channels_kept'])}/{len(meta['channels'])} (dropped: {q['channels_dropped'] or 'none'}) | "
-          f"guard {q['guard_sec']:.2f} s | stimulus windows rejected: {own} own gate + {near} near artifact | "
+          f"guard {q['guard_sec']:.2f} s | stimulus windows rejected: {own} own gate + {raw} raw gate + {near} near artifact | "
           f"valid {q['n_valid']}/{sum(meta['label_counts'].values())}")
 
 

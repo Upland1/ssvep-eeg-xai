@@ -58,6 +58,7 @@ quality:
   artifact_block_sec: 0.25        # Artifact scan block size
   guard_sec: auto                 # Use the slowest filter's ringing time
   guard_rel_amplitude: 0.01       # Ringing cutoff
+  source: both                    # Check limits on filtered, raw, or both signals
 
 # Optional narrow filter-bank bands.
 filter_bank:
