@@ -1,7 +1,11 @@
-"""Benchmark neural networks on the window-sweep datasets.
+"""Compare neural networks on window-sweep data.
 
-Use datasets built by `scripts/build_windows.py`. Models use trial-grouped
-cross-validation, validation-based early stopping, and optional augmentation.
+Build the data first with ``scripts/build_windows.py``. The sweep compares
+CCNN, Compact-CNN, and EEGNet with trial-grouped 5-fold CV. Each fold uses
+20% of its training trials for validation and keeps the best validation loss.
+Augmentation is on by default; use ``--no-augment`` to disable it.
+
+Start with ``--windows 1`` before running the full sweep.
 """
 from __future__ import annotations
 
@@ -35,7 +39,7 @@ MODELS = ("ccnn", "compact", "eegnet")
 
 
 def _import(names: list[str], attr: str):
-  """Import an attribute from the first available module."""
+  """Load an attribute from the first available module."""
   for name in names:
     try:
       return getattr(importlib.import_module(name), attr)
@@ -44,35 +48,43 @@ def _import(names: list[str], attr: str):
   raise ImportError(f"Could not find {attr} in any of {names}")
 
 
-def build_model(name: str, n_channels: int, n_samples: int, fs: float) -> nn.Module:
+def build_model(name: str, n_channels: int, n_samples: int, fs: float, n_classes: int = len(STIM_CONDITIONS)) -> nn.Module:
   if name == "ccnn":
     CCNN = _import(["src.models.cnn.ccnn"], "CCNN")
-    return CCNN(n_classes=len(STIM_CONDITIONS), n_channels=n_channels, n_samples=n_samples, fs=fs)
+    return CCNN(n_classes=n_classes, n_channels=n_channels, n_samples=n_samples, fs=fs)
   EEGNetSSVEP = _import(["src.models.cnn.eegnet"], "EEGNetSSVEP")
   kernel = int(fs // 2)
   if name == "compact":
-    return EEGNetSSVEP(n_classes=len(STIM_CONDITIONS), n_channels=n_channels, n_samples=n_samples,
+    return EEGNetSSVEP(n_classes=n_classes, n_channels=n_channels, n_samples=n_samples,
                        F1=96, D=1, F2=96, kernel_length=kernel, dropout_rate=0.5)
-  return EEGNetSSVEP(n_classes=len(STIM_CONDITIONS), n_channels=n_channels, n_samples=n_samples,
+  return EEGNetSSVEP(n_classes=n_classes, n_channels=n_channels, n_samples=n_samples,
                      kernel_length=kernel)
 
 
 def _predict(model: nn.Module, X: torch.Tensor, device) -> np.ndarray:
+  """Return batched softmax predictions to limit GPU memory use."""
   model.eval()
   with torch.no_grad():
-    out = [torch.softmax(model(X[i:i + 256].to(device)), dim=1).cpu() for i in range(0, len(X), 256)]
+    out = [torch.softmax(model(X[i:i + 64].to(device)), dim=1).cpu() for i in range(0, len(X), 64)]
   return torch.cat(out).numpy()
 
 
 def train_fold(name: str, d: dict, Xs: np.ndarray, y: np.ndarray, tr: np.ndarray, te: np.ndarray,
                args, seed: int) -> tuple[np.ndarray, dict]:
-  """Train one fold with validation-based early stopping."""
+  """Train one fold and return its test-fold probabilities."""
+  model, info = fit_network(name, Xs, y, d["trial_ids"], tr, d["fs"], args, seed)
+  return _predict(model, torch.tensor(Xs[te]), torch.device(args.device)), info
+
+
+def fit_network(name: str, Xs: np.ndarray, y: np.ndarray, trial_ids: np.ndarray, tr: np.ndarray, fs: float,
+                args, seed: int, n_classes: int = len(STIM_CONDITIONS)) -> tuple[nn.Module, dict]:
+  """Train one network with trial-grouped validation and early stopping."""
   torch.manual_seed(seed)
   np.random.seed(seed)
   device = torch.device(args.device)
 
   inner = StratifiedGroupKFold(n_splits=max(2, int(round(1 / args.val_frac))), shuffle=True, random_state=seed)
-  fit_rel, val_rel = next(inner.split(tr, y[tr], groups=d["trial_ids"][tr]))
+  fit_rel, val_rel = next(inner.split(tr, y[tr], groups=trial_ids[tr]))
   fit, val = tr[fit_rel], tr[val_rel]
 
   if args.augment:
@@ -85,7 +97,7 @@ def train_fold(name: str, d: dict, Xs: np.ndarray, y: np.ndarray, tr: np.ndarray
   X_all = torch.tensor(Xs)
   y_val = torch.tensor(y[val])
 
-  model = build_model(name, Xs.shape[1], Xs.shape[2], d["fs"]).to(device)
+  model = build_model(name, Xs.shape[1], Xs.shape[2], fs, n_classes).to(device)
   opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-2)
   sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
   loss_fn = nn.CrossEntropyLoss(label_smoothing=0.05)
@@ -109,7 +121,7 @@ def train_fold(name: str, d: dict, Xs: np.ndarray, y: np.ndarray, tr: np.ndarray
 
   model.load_state_dict(best["state"])
   train_acc = float((_predict(model, X_all[fit], device).argmax(1) == y[fit]).mean() * 100)
-  return _predict(model, X_all[te], device), {"train": train_acc, "val": best["val_acc"], "epoch": best["epoch"]}
+  return model, {"train": train_acc, "val": best["val_acc"], "epoch": best["epoch"]}
 
 
 def run_subject(sub: str, sub_dir: Path, args) -> tuple[list[dict], list[pd.DataFrame]]:
