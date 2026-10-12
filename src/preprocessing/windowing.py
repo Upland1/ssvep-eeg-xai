@@ -43,13 +43,28 @@ class WindowIndex:
   starts: np.ndarray      # window start samples
   labels: np.ndarray      # condition codes
   trial_ids: np.ndarray   # trial ids
-  sub_idx: np.ndarray     # within-trial positions
+  sub_idx: np.ndarray     # within-trial positions (0, 1, 2, ...)
+  offsets: np.ndarray     # samples from the segment onset to the window start
 
 
 def event_onsets(mark: np.ndarray, code: int) -> np.ndarray:
   """Samples where MARK switches to `code` (rising edge of the pulse)."""
   change = np.diff(mark, prepend=0) != 0
   return np.flatnonzero((mark == code) & change)
+
+
+def segment_starts(onset: int, seg_len: int, win: int, step: int, n_total: int) -> list[int]:
+  """Starts of every window that fits inside [onset, onset + seg_len) and the recording."""
+  stop = min(onset + seg_len, n_total)
+  if onset < 0 or stop - onset < win:
+    return []
+  return list(range(onset, stop - win + 1, step))
+
+
+def windows_per_segment(seg_sec: float, window_sec: float, stride_sec: float, fs: float) -> int:
+  """Number of windows that fit in a segment of `seg_sec` seconds."""
+  seg, win, step = (int(round(x * fs)) for x in (seg_sec, window_sec, stride_sec))
+  return 0 if seg < win else (seg - win) // step + 1
 
 
 def build_window_index(
@@ -62,47 +77,60 @@ def build_window_index(
     stim_duration_sec: float = 5.0,
     cross_duration_sec: float = 2.0,
     cue_lookback_sec: float = 1.0,
+    stride_sec: float | None = None,
 ) -> WindowIndex:
-  """Locate every analysis window in a continuous recording (legacy rules)."""
+  """Locate every analysis window in a continuous recording.
+
+  Each condition is a segment: cross = [onset, onset + cross_duration),
+  cue = [cue onset - lookback, cue onset), stimulus = [onset, onset + stim_duration).
+  Windows of `sub_window_sec` are placed every `stride_sec` and must fit entirely
+  inside their segment. `stride_sec=None` uses the window length (no overlap),
+  which reproduces the legacy windows exactly. A stimulus trial is kept only if
+  the whole stimulus segment is inside the recording (legacy rule).
+  """
+  if sub_window_sec <= 0:
+    raise ValueError(f"window length must be > 0, got {sub_window_sec}")
+  stride_sec = sub_window_sec if stride_sec is None else stride_sec
+  if stride_sec <= 0:
+    raise ValueError(f"stride must be > 0, got {stride_sec}")
+
   n_total = len(mark)
   win = int(round(sub_window_sec * fs))
-  starts, labels, trials, subs = [], [], [], []
+  step = max(1, int(round(stride_sec * fs)))
+  starts, labels, trials, subs, offs = [], [], [], [], []
   trial = 0
 
-  def add(trial_starts, code):
+  def add(segments, code):
     nonlocal trial
-    for s_list in trial_starts:
+    for onset, s_list in segments:
       for k, s in enumerate(s_list):
-        starts.append(s), labels.append(code), trials.append(trial), subs.append(k)
+        starts.append(s), labels.append(code), trials.append(trial), subs.append(k), offs.append(s - onset)
       if s_list:
         trial += 1
 
-  # Cut cross windows.
-  cross = []
-  for c in event_onsets(mark, cross_condition):
-    end = min(n_total, c + int(round(cross_duration_sec * fs)))
-    cross.append([c + k * win for k in range((end - c) // win)])
-  add(cross, cross_condition)
+  # Cross (rest) windows.
+  cross_len = int(round(cross_duration_sec * fs))
+  add([(c, segment_starts(c, cross_len, win, step, n_total)) for c in event_onsets(mark, cross_condition)],
+      cross_condition)
 
-  # Cut the cue lookback window.
+  # Cue lookback windows.
   if cue_condition is not None:
     look = int(round(cue_lookback_sec * fs))
-    add([[c - look] for c in event_onsets(mark, cue_condition) if c - look >= 0], cue_condition)
+    add([(c - look, segment_starts(c - look, look, win, step, n_total))
+         for c in event_onsets(mark, cue_condition)], cue_condition)
 
-  # Cut complete stimulus windows.
-  n_sub = int(round(stim_duration_sec / sub_window_sec))
+  # Stimulus windows (complete trials only).
+  stim_len = int(round(stim_duration_sec * fs))
   for code in stim_conditions:
-    stim = []
-    for e in event_onsets(mark, code):
-      if e + n_sub * win <= n_total:
-        stim.append([e + k * win for k in range(n_sub)])
-    add(stim, code)
+    add([(e, segment_starts(e, stim_len, win, step, n_total))
+         for e in event_onsets(mark, code) if e + stim_len <= n_total], code)
 
   return WindowIndex(
       starts=np.asarray(starts, dtype=np.int64),
       labels=np.asarray(labels, dtype=np.int64),
       trial_ids=np.asarray(trials, dtype=np.int64),
       sub_idx=np.asarray(subs, dtype=np.int64),
+      offsets=np.asarray(offs, dtype=np.int64),
   )
 
 
