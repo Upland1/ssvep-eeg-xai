@@ -1,39 +1,36 @@
 """Leave-one-subject-out (LOSO) generalization benchmark.
 
-For each subject S: train on ALL other subjects, test on S (never seen during
-training). Repeat for every subject. This measures how well a model works on a
-brand-new user with no calibration data, and is the cross-subject counterpart
-of the within-subject numbers from ``benchmark_window_sweep.py`` /
-``benchmark_nn_sweep.py`` (same data, same feature code, same networks).
+For each subject, train on all other subjects and test on the held-out subject.
+The test subject is never used during training, so this measures performance
+for a new user without calibration data.
 
-Build the data first (same folder the sweeps use), e.g.:
+Build the data first, for example:
   python scripts/build_windows.py --window-sec 1 --stride-sec 0.25 --banks fbcca fbcsp
 
-Methods
-  fbcca         FBCCA argmax. Needs no training, so its score is the
-                calibration-free floor every trained method should beat.
-  lda           FBCSP + FBCCA -> StandardScaler -> Shrinkage-LDA, fitted on the
-                pooled training subjects.
-  lda_subjnorm  Same, but each subject's features are z-scored with that
-                subject's OWN mean/std before pooling (uses no labels of the
-                test subject, only its unlabeled windows -- report it as
-                "unsupervised per-subject normalization").
+Methods:
+  within_lda    Within-subject, trial-grouped LDA reference using the same
+                selected channels as the LOSO methods.
+  fbcca         Training-free FBCCA baseline.
+  lda           Pooled FBCSP + FBCCA features with Shrinkage-LDA.
+  lda_subjnorm  The same LDA pipeline, after z-scoring each subject's features
+                with that subject's unlabeled mean and standard deviation.
   ccnn / compact / eegnet
-                The networks from benchmark_nn_sweep.py, trained on the pooled
-                training subjects with its early stopping (validation = 20% of
-                the training TRIALS, never the test subject).
+                Neural networks trained on pooled subjects with validation
+                and early stopping using training trials only.
 
-Channels: CSP filters and CNN input layers need the same channels for every
-subject, so by default only channels kept by the quality gate in EVERY subject
-are used (``--channels common``). ``--channels all`` keeps all 8.
+Channels: CSP filters and CNN inputs need the same channels for every subject.
+``--channels common`` keeps channels that pass quality checks in all subjects;
+``--channels all`` keeps the full montage; explicit names keep only subjects
+whose quality gate accepted every requested channel.
 
-The run is resumable: every finished (method, test subject) fold is saved under
-``<out-dir>/folds/`` and skipped on the next run, so a Colab disconnect only
-loses the fold in progress. Rerun the same command to continue.
+Completed folds are saved under ``<out-dir>/folds/`` and skipped on reruns.
+Each fold records its channels and training subjects; a changed configuration
+stops with an error instead of mixing results. Use a new ``--out-dir`` for it.
+The summary includes every method with saved folds in the output directory.
 
-Usage (from the repo root):
-  python scripts/benchmarks/benchmark_loso.py --methods fbcca lda lda_subjnorm
-  python scripts/benchmarks/benchmark_loso.py --methods ccnn compact eegnet --device cuda
+Usage:
+  python benchmark_loso.py --methods fbcca lda lda_subjnorm
+  python benchmark_loso.py --methods ccnn compact eegnet --device cuda
 """
 from __future__ import annotations
 
@@ -61,7 +58,7 @@ from benchmark_window_sweep import (  # noqa: E402
 )
 from src.features.ssvep.fbcsp_extraction import MulticlassCSP  # noqa: E402
 
-CLASSICAL = ("fbcca", "lda", "lda_subjnorm")
+CLASSICAL = ("within_lda", "fbcca", "lda", "lda_subjnorm")
 NETWORKS = ("ccnn", "compact", "eegnet")
 METHODS = CLASSICAL + NETWORKS
 
@@ -72,24 +69,37 @@ def read_meta(sub_dir: Path) -> dict:
   return json.loads((sub_dir / "windows_meta.json").read_text())
 
 
-def choose_channels(sub_dirs: dict[str, Path], mode: str) -> list[str]:
-  """Channels used for every subject: kept in all subjects, or the full montage."""
+def choose_channels(sub_dirs: dict[str, Path], spec: list[str]) -> tuple[list[str], dict[str, Path]]:
+  """Choose channels and subjects that pass the requested quality rules."""
   metas = {s: read_meta(p) for s, p in sub_dirs.items()}
   montage = list(next(iter(metas.values()))["channels"])
   for s, m in metas.items():
     if list(m["channels"]) != montage:
       raise ValueError(f"{s} has channels {m['channels']}, expected {montage}; rebuild all subjects together")
-  if mode == "all":
-    return montage
-  kept = [set(m["quality"]["channels_kept"]) for m in metas.values()]
-  common = [c for c in montage if all(c in k for k in kept)]
-  if len(common) < 2:
-    raise ValueError(f"Only {common} survive the quality gate in every subject; use --channels all")
-  return common
+  kept = {s: set(m["quality"]["channels_kept"]) for s, m in metas.items()}
+  for s, m in metas.items():
+    if m["quality"]["channels_dropped"]:
+      print(f"  quality gate dropped {m['quality']['channels_dropped']} in {s}")
+  if spec == ["all"]:
+    return montage, sub_dirs
+  if spec == ["common"]:
+    common = [c for c in montage if all(c in k for k in kept.values())]
+    if len(common) < 2:
+      raise ValueError(f"Only {common} survive the quality gate in every subject; name the channels instead")
+    return common, sub_dirs
+  unknown = [c for c in spec if c not in montage]
+  if unknown:
+    raise ValueError(f"Unknown channels {unknown}; montage is {montage}")
+  channels = [c for c in montage if c in spec]
+  usable = {s: p for s, p in sub_dirs.items() if set(channels) <= kept[s]}
+  left_out = sorted(set(sub_dirs) - set(usable))
+  if left_out:
+    print(f"  left out (gate rejected one of {channels}): {left_out}")
+  return channels, usable
 
 
 def load_subject(sub_dir: Path, channels: list[str]) -> dict:
-  """Clean stimulus windows of one subject on the given channel list."""
+  """Load clean stimulus windows for the selected channels."""
   meta = read_meta(sub_dir)
   missing = [f for f in ("X_bands_fbcca.npy", "X_bands_fbcsp.npy") if not (sub_dir / f).exists()]
   if missing:
@@ -122,7 +132,7 @@ def load_subject(sub_dir: Path, channels: list[str]) -> dict:
 # ----------------------------------------------------------------------- methods
 
 def lda_loso(train: list[dict], test: dict, subject_norm: bool) -> tuple[np.ndarray, dict]:
-  """Pooled FBCSP+FBCCA Shrinkage-LDA; returns test probabilities and the fitted parts."""
+  """Fit pooled LDA features and return test probabilities."""
   y_tr = np.concatenate([d["y"] for d in train])
   n_bands = test["bands_csp"].shape[1]
   csps = [MulticlassCSP(n_components=1).fit(np.concatenate([d["bands_csp"][:, b] for d in train]), y_tr)
@@ -130,7 +140,7 @@ def lda_loso(train: list[dict], test: dict, subject_norm: bool) -> tuple[np.ndar
 
   def features(d: dict) -> np.ndarray:
     f = np.hstack([csp.transform(d["bands_csp"][:, b]) for b, csp in enumerate(csps)] + [d["X_cca"]])
-    if subject_norm:  # this subject's own statistics; labels are not used
+    if subject_norm:  # use this subject's unlabeled statistics
       f = (f - f.mean(axis=0)) / (f.std(axis=0) + 1e-8)
     return f
 
@@ -146,16 +156,31 @@ def lda_loso(train: list[dict], test: dict, subject_norm: bool) -> tuple[np.ndar
                                                "subject_norm": subject_norm}}
 
 
+def within_lda(d: dict, folds: int, repeats: int, seed: int) -> tuple[np.ndarray, dict]:
+  """Run grouped within-subject CV and return mean probabilities and accuracy."""
+  from sklearn.model_selection import StratifiedGroupKFold
+  from benchmark_window_sweep import lda_fold
+
+  runs = []
+  for r in range(repeats):
+    probs = np.zeros((len(d["y"]), len(STIM_CONDITIONS)))
+    cv = StratifiedGroupKFold(n_splits=folds, shuffle=True, random_state=seed + r)
+    for tr, te in cv.split(d["X"], d["y"], groups=d["trial_ids"]):
+      probs[te] = lda_fold(d, d["X_cca"], tr, te)
+    runs.append(probs)
+  accs = [(STIM_CONDITIONS[p.argmax(1)] == d["y"]).mean() * 100 for p in runs]
+  return np.mean(runs, axis=0), {"acc_repeats": float(np.mean(accs))}
+
+
 def network_loso(name: str, train: list[dict], test: dict, args) -> tuple[np.ndarray, dict]:
-  """Train one network on the pooled training subjects (early stopping on held-out training trials)."""
+  """Train a network on pooled subjects with grouped early stopping."""
   import torch
   from benchmark_nn_sweep import _predict, fit_network
 
   label = {int(c): i for i, c in enumerate(STIM_CONDITIONS)}
   Xs = np.concatenate([_standardize(d["X"]) for d in train]).astype(np.float32)
   y = np.array([label[int(c)] for d in train for c in d["y"]], dtype=np.int64)
-  # Trial ids restart at 0 in every subject; offset them so trials of different
-  # subjects never share a group in the validation split.
+  # Offset subject-local trial IDs so groups stay distinct.
   groups, offset = [], 0
   for d in train:
     groups.append(d["trial_ids"] + offset)
@@ -169,7 +194,7 @@ def network_loso(name: str, train: list[dict], test: dict, args) -> tuple[np.nda
 # --------------------------------------------------------------------- reporting
 
 def smoothed_acc(probs: np.ndarray, d: dict) -> float:
-  """2-tap trial-aware smoothing on consecutive windows of the same trial (ordered by offset)."""
+  """Score 2-tap smoothing within each trial."""
   order = np.lexsort((d["offset_sec"], d["trial_ids"]))
   p, tid, y = probs[order], d["trial_ids"][order], d["y"][order]
   same = np.r_[False, tid[1:] == tid[:-1]]
@@ -180,6 +205,19 @@ def smoothed_acc(probs: np.ndarray, d: dict) -> float:
 
 def fold_path(out_dir: Path, method: str, sub: str) -> Path:
   return out_dir / "folds" / f"{method}__test-{sub}.npz"
+
+
+def check_fold(path: Path, channels: list[str], train_subs: list[str]) -> None:
+  """Reject saved folds from a different channel or subject configuration."""
+  f = np.load(path)
+  if "channels" not in f:  # allow folds from the original format
+    return
+  saved_ch = [str(c) for c in f["channels"]]
+  same = saved_ch == channels and sorted(str(t) for t in f["train_subjects"]) == sorted(train_subs)
+  if not same:
+    raise SystemExit(f"{path} was computed with channels {saved_ch} and "
+                     f"{len(f['train_subjects'])} training subjects; this run uses {channels} and "
+                     f"{len(train_subs)}. Use a new --out-dir for a different configuration.")
 
 
 def save_model(method: str, sub: str, model, args) -> None:
@@ -203,7 +241,10 @@ def main():
   ap.add_argument("--stride-sec", type=float, default=0.25)
   ap.add_argument("--subjects", nargs="*", default=None, help="Subset of subjects (default: all found)")
   ap.add_argument("--methods", nargs="+", choices=METHODS, default=list(CLASSICAL))
-  ap.add_argument("--channels", choices=("common", "all"), default="common")
+  ap.add_argument("--channels", nargs="+", default=["common"],
+                  help="common (default) | all | explicit names, e.g. PO3 POz PO4 O1 Oz O2")
+  ap.add_argument("--folds", type=int, default=5, help="CV folds for within_lda (default 5)")
+  ap.add_argument("--within-repeats", type=int, default=5, help="CV repeats for within_lda (default 5)")
   ap.add_argument("--no-augment", dest="augment", action="store_false")
   ap.add_argument("--epochs", type=int, default=150, help="Maximum epochs (early stopping usually ends sooner)")
   ap.add_argument("--patience", type=int, default=25)
@@ -238,7 +279,7 @@ def main():
     print(f"LOSO needs at least 2 subjects; found {list(sub_dirs)} in {data_dir}")
     return
 
-  channels = choose_channels(sub_dirs, args.channels)
+  channels, sub_dirs = choose_channels(sub_dirs, args.channels)
   print("=" * 90)
   print(f"LOSO | {len(sub_dirs)} subjects {list(sub_dirs)} | data {data_dir}")
   print(f"channels ({args.channels}): {channels} | methods {args.methods}"
@@ -254,17 +295,21 @@ def main():
   if len({d["fs"] for d in data.values()}) > 1:
     raise ValueError("Subjects have different sampling rates; rebuild them with the same settings")
 
-  # ---- run every (method, held-out subject) fold, skipping finished ones
+  # Run each fold and skip completed results.
   for method in args.methods:
     for test_sub in data:
       path = fold_path(args.out_dir, method, test_sub)
+      train_subs = [s for s in data if s != test_sub] if method != "within_lda" else []
       if path.exists():
+        check_fold(path, channels, train_subs)
         print(f"  [=] {method:13s} test={test_sub}: already done, skipping")
         continue
       test = data[test_sub]
-      train = [data[s] for s in data if s != test_sub]
+      train = [data[s] for s in train_subs]
       ft = time.time()
-      if method == "fbcca":
+      if method == "within_lda":
+        probs, info = within_lda(test, args.folds, args.within_repeats, args.seed)
+      elif method == "fbcca":
         probs, info = test["X_cca"] / test["X_cca"].sum(axis=1, keepdims=True), {}
       elif method in ("lda", "lda_subjnorm"):
         probs, info = lda_loso(train, test, subject_norm=method == "lda_subjnorm")
@@ -273,16 +318,18 @@ def main():
       if args.save_models and "model" in info:
         save_model(method, test_sub, info["model"], args)
       path.parent.mkdir(parents=True, exist_ok=True)
-      np.savez(path, probs=probs, train=info.get("train", np.nan), val=info.get("val", np.nan),
-               epoch=info.get("epoch", np.nan), seconds=time.time() - ft)
-      acc = float((STIM_CONDITIONS[probs.argmax(1)] == test["y"]).mean() * 100)
+      acc = info.get("acc_repeats", float((STIM_CONDITIONS[probs.argmax(1)] == test["y"]).mean() * 100))
+      np.savez(path, probs=probs, acc=acc, train=info.get("train", np.nan), val=info.get("val", np.nan),
+               epoch=info.get("epoch", np.nan), seconds=time.time() - ft,
+               channels=np.array(channels), train_subjects=np.array(train_subs, dtype=str))
       extra = f" | train {info['train']:.0f}%" if "train" in info else ""
       extra += f", val {info['val']:.0f}%, best epoch {info['epoch']}" if "val" in info else ""
       print(f"  [+] {method:13s} test={test_sub}: {acc:6.2f}%{extra} ({time.time() - ft:.0f} s)", flush=True)
 
-  # ---- summary from every saved fold (including ones from earlier runs)
+  # Summarize all saved folds, including earlier runs.
   records, preds = [], []
-  for method in args.methods:
+  done = [m for m in METHODS if any(fold_path(args.out_dir, m, s).exists() for s in data)]
+  for method in done:
     for sub, d in data.items():
       path = fold_path(args.out_dir, method, sub)
       if not path.exists():
@@ -291,6 +338,8 @@ def main():
       probs = f["probs"]
       rec = summarize(sub, d, method, [probs], args.gaze_sec,
                       None if np.isnan(f["train"]) else [float(f["train"])])
+      if "acc" in f:  # within_lda stores mean accuracy over repeats
+        rec["Acc (%)"] = round(float(f["acc"]), 2)
       rec["2-tap Smoothed (%)"] = round(smoothed_acc(probs, d), 2)
       rec["Val Acc (%)"] = round(float(f["val"]), 2) if not np.isnan(f["val"]) else np.nan
       rec["Best Epoch"] = float(f["epoch"])
@@ -309,15 +358,21 @@ def main():
 
   print("=" * 90)
   print("PER SUBJECT (accuracy % when that subject is the unseen test subject)")
-  print(df.pivot(index="Subject", columns="Method", values="Acc (%)")[
-      [m for m in args.methods if m in df["Method"].unique()]].round(2).to_string())
+  print(df.pivot(index="Subject", columns="Method", values="Acc (%)")[done].round(2).to_string())
   print("-" * 90)
   print("COHORT (mean +/- SD over held-out subjects; chance = 20%)")
   cohort = df.groupby("Method").agg(**{
       "Acc %": ("Acc (%)", "mean"), "SD": ("Acc (%)", "std"),
       "Smoothed %": ("2-tap Smoothed (%)", "mean"), "BalAcc %": ("BalAcc (%)", "mean"),
       "ITR": ("ITR (bits/min)", "mean"), "Train %": ("Train Acc (%)", "mean")})
-  print(cohort.reindex([m for m in args.methods if m in cohort.index]).round(2).to_string())
+  print(cohort.reindex(done).round(2).to_string())
+  if "within_lda" in done:
+    w = df[df["Method"] == "within_lda"].set_index("Subject")["Acc (%)"]
+    print("-" * 90)
+    print("LOSO minus within-subject LDA on the same channels (pp, mean over subjects):")
+    for m in [x for x in done if x not in ("within_lda", "fbcca")]:
+      a = df[df["Method"] == m].set_index("Subject")["Acc (%)"]
+      print(f"  {m:13s} {float((a - w).mean()):+6.2f}")
   print(f"Saved summary.csv, predictions.csv, confusion.csv to {args.out_dir} ({time.time() - t0:.0f} s)")
 
 
